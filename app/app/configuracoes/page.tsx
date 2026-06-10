@@ -95,8 +95,8 @@ export default function ConfiguracoesPage() {
       superintendente_id: config.superintendente_id || null,
     }, { onConflict: 'id' })
     setSalvando(false)
-    if (!error) {
-        alert('Erro ao salvar: ' + error.message)
+ if (error) {
+    alert('Erro ao salvar: ' + (error as Error).message)
   return
   // setSucesso(true)
   //     setTimeout(() => setSucesso(false), 3000)
