@@ -3,7 +3,7 @@
 import { useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { createBrowserClient } from '@supabase/ssr'
-
+import Image from 'next/image'
 export default function LoginPage() {
   const router = useRouter()
   const [email, setEmail] = useState('')
@@ -45,22 +45,24 @@ export default function LoginPage() {
     }}>
 
       {/* Logo */}
-      <div style={{ textAlign: 'center', marginBottom: 40 }}>
-        <div style={{
-          width: 64, height: 64, borderRadius: 16,
-          background: '#3BAD68', display: 'flex',
-          alignItems: 'center', justifyContent: 'center',
-          fontSize: 32, margin: '0 auto 16px',
-        }}>
-          🗺️
-        </div>
-        <h1 style={{ fontSize: 22, fontWeight: 700, color: '#1A1A1A', margin: 0 }}>
-          Território de Campo
-        </h1>
-        <p style={{ fontSize: 14, color: '#888', marginTop: 4 }}>
-          Gestão de territórios
-        </p>
-      </div>
+<div style={{
+  width: 80,
+  height: 80,
+  margin: '0 auto 59px',
+  display: 'flex',
+  alignItems: 'center',
+  justifyContent: 'center',
+}}>
+  <Image
+    src="/logo.png"
+    alt="Território de Campo"
+    width={400}
+    height={300}
+    style={{
+      objectFit: 'contain'
+    }}
+  />
+</div>
 
       {/* Card */}
       <div style={{
