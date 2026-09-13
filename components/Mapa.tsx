@@ -84,6 +84,8 @@ export default function Mapa() {
   const ladoLayersRef = useRef<Map<string, any>>(new Map())
   const pontoLayersRef = useRef<any[]>([])
   const pendingGeoJsonRef = useRef<any>(null)
+  const apagarPontoRef = useRef<(id: string) => Promise<void>>(async () => {})
+  const editarPontoRef = useRef<(p: PontoParada) => void>(() => {})
 
   const [usuario, setUsuario] = useState<Usuario | null>(null)
   const [territorios, setTerritorios] = useState<Territorio[]>([])
@@ -156,8 +158,23 @@ export default function Mapa() {
           ${data ? `<span style="color:#888">🕐 ${data}</span><br/>` : ''}
           ${p.observacao ? `<span style="color:#333;font-style:italic">"${p.observacao}"</span><br/>` : '<span style="color:#AAAAAA;font-style:italic">Sem observação</span><br/>'}
           <a href="${mapsUrl}" target="_blank" style="color:#378ADD;font-size:12px;font-weight:600">🗺️ Abrir no Google Maps</a>
+          <div style="display:flex;gap:6px;margin-top:8px">
+            <button data-acao="editar-ponto" style="flex:1;padding:6px 8px;font-size:12px;font-weight:600;background:#F0F0F0;border:0.5px solid #DDD;border-radius:6px;color:#444;cursor:pointer">✏️ Editar</button>
+            <button data-acao="apagar-ponto" style="flex:1;padding:6px 8px;font-size:12px;font-weight:600;background:#FFF0F0;border:1px solid #FFCCCC;border-radius:6px;color:#E05050;cursor:pointer">🗑️ Excluir</button>
+          </div>
         </div>
       `, { maxWidth: 260 })
+      marker.on('popupopen', (e: any) => {
+        const el: HTMLElement = e.popup.getElement()
+        el.querySelector('[data-acao="apagar-ponto"]')?.addEventListener('click', () => {
+          m.closePopup()
+          void apagarPontoRef.current(p.id)
+        })
+        el.querySelector('[data-acao="editar-ponto"]')?.addEventListener('click', () => {
+          m.closePopup()
+          editarPontoRef.current(p)
+        })
+      })
       pontoLayersRef.current.push(marker)
     })
   }, [])
@@ -348,6 +365,15 @@ export default function Mapa() {
       renderizarPontos(mapInstanceRef.current, data ?? [])
     }
   }
+
+  function editarPontoNoMapa(p: PontoParada) {
+    setEditandoPonto(p); setPontoObs(p.observacao ?? ''); setModalPonto(true)
+  }
+
+  useEffect(() => {
+    apagarPontoRef.current = apagarPonto
+    editarPontoRef.current = editarPontoNoMapa
+  })
 
   // ── Desenho ──────────────────────────────────────────────────────────────────
   function ativarDesenho() {
