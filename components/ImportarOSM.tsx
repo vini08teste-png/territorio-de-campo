@@ -8,9 +8,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { supabase } from '@/lib/supabase'
 import { gerarLados, nomeDaQuadra, proximaSequencia } from '@/lib/quadras'
-import {
-  buscarRuas, caixaDoContorno, featureDaQuadra, gerarQuadras, type QuadraGerada,
-} from '@/lib/quadrasOSM'
+import { featureDaQuadra, gerarQuadrasDoContorno, type QuadraGerada } from '@/lib/quadrasOSM'
 import { poligonosDoContorno } from '@/lib/territorio'
 
 interface TerritorioOpcao {
@@ -28,6 +26,27 @@ interface Props {
 }
 
 type Etapa = 'selecao' | 'buscando' | 'revisao' | 'gravando' | 'erro'
+  | 'confirmarTodos' | 'gerandoTodos' | 'resumo'
+
+type Situacao = 'gravadas' | 'ja_tinha' | 'sem_quadras' | 'erro'
+
+interface LinhaResumo {
+  territorio: string
+  situacao: Situacao
+  quadras: number
+  detalhe?: string
+}
+
+const ICONE: Record<Situacao, string> = {
+  gravadas: '✅', ja_tinha: '⏭️', sem_quadras: '➖', erro: '⚠️',
+}
+
+/** Um respiro entre as consultas para não martelar a Overpass. */
+const PAUSA_ENTRE_TERRITORIOS_MS = 1000
+
+function espera(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
 
 const VERDE = '#3BAD68'
 const CINZA = '#9E9E9E'
@@ -45,6 +64,8 @@ export default function ImportarOSM({ mapInstance: map, territorios, onConcluir,
   const [descartadas, setDescartadas] = useState(0)
   const [quadrasExistentes, setQuadrasExistentes] = useState<string[]>([])
   const [erroMsg, setErroMsg] = useState('')
+  const [progresso, setProgresso] = useState<{ atual: number; total: number; nome: string } | null>(null)
+  const [resumo, setResumo] = useState<LinhaResumo[]>([])
   const previewRef = useRef<any[]>([])
   const abortRef = useRef<AbortController | null>(null)
 
@@ -117,20 +138,15 @@ export default function ImportarOSM({ mapInstance: map, territorios, onConcluir,
     setEtapa('buscando')
     limparPreview()
     try {
-      const poligonos = poligonosDoContorno(territorio.geojson) as [number, number][][][]
-      const caixa = caixaDoContorno(poligonos)
-      if (!caixa) throw new Error('O contorno deste território está vazio.')
-
-      const [ruas, { data: jaGravadas }] = await Promise.all([
-        buscarRuas(caixa, controle.signal),
+      const [resultado, { data: jaGravadas }] = await Promise.all([
+        gerarQuadrasDoContorno(territorio.geojson, { sinal: controle.signal }),
         supabase.from('quadras').select('nome').eq('territorio_id', territorio.id),
       ])
       if (controle.signal.aborted) return
 
-      const resultado = gerarQuadras({ contorno: territorio.geojson, ruas })
       if (resultado.quadras.length === 0) {
         throw new Error(
-          ruas.length === 0
+          resultado.ruasEncontradas === 0
             ? 'O OpenStreetMap não tem ruas mapeadas nesta região. Desenhe as quadras à mão ou cadastre as ruas no OSM.'
             : 'As ruas encontradas não fecham nenhuma quadra dentro do contorno. Confira o contorno do território.'
         )
@@ -160,6 +176,69 @@ export default function ImportarOSM({ mapInstance: map, territorios, onConcluir,
       setEtapa('erro')
     }
   }, [territorio, map, limparPreview, estiloDaPrevia, alternar])
+
+  // ── Gerar em todos os territórios de uma vez ───────────────────────────────
+  const gerarTodos = useCallback(async () => {
+    abortRef.current?.abort()
+    const controle = new AbortController()
+    abortRef.current = controle
+
+    limparPreview()
+    setResumo([])
+    setEtapa('gerandoTodos')
+
+    // Quem já tem quadra fica de fora, para não duplicar o que foi feito à mão
+    const { data: jaGravadas } = await supabase.from('quadras').select('territorio_id')
+    const comQuadras = new Map<string, number>()
+    for (const q of (jaGravadas ?? []) as { territorio_id: string }[]) {
+      comQuadras.set(q.territorio_id, (comQuadras.get(q.territorio_id) ?? 0) + 1)
+    }
+
+    const linhas: LinhaResumo[] = []
+    for (let i = 0; i < comContorno.length; i++) {
+      if (controle.signal.aborted) return
+      const alvo = comContorno[i]
+      const rotulo = `#${alvo.numero} — ${alvo.nome}`
+      setProgresso({ atual: i + 1, total: comContorno.length, nome: rotulo })
+
+      const quantasJaTem = comQuadras.get(alvo.id) ?? 0
+      if (quantasJaTem > 0) {
+        linhas.push({ territorio: rotulo, situacao: 'ja_tinha', quadras: quantasJaTem })
+        setResumo([...linhas])
+        continue
+      }
+
+      try {
+        const { quadras: geradas } = await gerarQuadrasDoContorno(alvo.geojson, { sinal: controle.signal })
+        if (controle.signal.aborted) return
+
+        if (geradas.length === 0) {
+          linhas.push({ territorio: rotulo, situacao: 'sem_quadras', quadras: 0 })
+        } else {
+          const registros = geradas.map((quadra, k) => ({
+            territorio_id: alvo.id,
+            nome: nomeDaQuadra(alvo.numero, k + 1),
+            status: 'nao_iniciado',
+            geojson: featureDaQuadra(quadra),
+            lados: gerarLados(quadra.anel),
+          }))
+          const { error } = await supabase.from('quadras').insert(registros)
+          if (error) linhas.push({ territorio: rotulo, situacao: 'erro', quadras: 0, detalhe: error.message })
+          else linhas.push({ territorio: rotulo, situacao: 'gravadas', quadras: geradas.length })
+        }
+      } catch (erro) {
+        if (controle.signal.aborted) return
+        linhas.push({ territorio: rotulo, situacao: 'erro', quadras: 0, detalhe: mensagemDeErro(erro) })
+      }
+
+      setResumo([...linhas])
+      if (i + 1 < comContorno.length) await espera(PAUSA_ENTRE_TERRITORIOS_MS)
+    }
+
+    setProgresso(null)
+    setEtapa('resumo')
+    onConcluir() // o mapa recarrega já com as quadras gravadas
+  }, [comContorno, limparPreview, onConcluir])
 
   function marcarTodas(marcar: boolean) {
     setSelecionadas(marcar ? new Set(quadras.map((_, i) => i)) : new Set())
@@ -201,6 +280,8 @@ export default function ImportarOSM({ mapInstance: map, territorios, onConcluir,
   // ── Render ─────────────────────────────────────────────────────────────────
   const total = quadras.length
   const marcadas = selecionadas.size
+  const totalGravadas = resumo.reduce((soma, l) => soma + (l.situacao === 'gravadas' ? l.quadras : 0), 0)
+  const territoriosGravados = resumo.filter((l) => l.situacao === 'gravadas').length
 
   return (
     <div style={{
@@ -221,6 +302,9 @@ export default function ImportarOSM({ mapInstance: map, territorios, onConcluir,
             {etapa === 'buscando' && '⏳ Consultando o OpenStreetMap…'}
             {etapa === 'revisao' && `${total} quadra(s) encontradas`}
             {etapa === 'gravando' && 'Gravando…'}
+            {etapa === 'confirmarTodos' && 'Confirmar a geração em lote'}
+            {etapa === 'gerandoTodos' && `⏳ ${progresso?.atual ?? 0} de ${progresso?.total ?? 0} territórios`}
+            {etapa === 'resumo' && 'Terminou'}
             {etapa === 'erro' && '⚠️ Deu problema'}
           </p>
         </div>
@@ -269,6 +353,90 @@ export default function ImportarOSM({ mapInstance: map, territorios, onConcluir,
             }}>
               🌐 Buscar ruas e gerar quadras
             </button>
+
+            {comContorno.length > 1 && (
+              <>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 10, color: '#CCCCCC', fontSize: 12 }}>
+                  <span style={{ flex: 1, height: 1, background: '#EEEEEE' }} /> ou <span style={{ flex: 1, height: 1, background: '#EEEEEE' }} />
+                </div>
+                <button onClick={() => setEtapa('confirmarTodos')} style={{
+                  padding: '13px', fontSize: 14, fontWeight: 600,
+                  background: '#FFFFFF', color: '#378ADD',
+                  border: '1.5px solid #378ADD', borderRadius: 10, cursor: 'pointer',
+                }}>
+                  ⚡ Gerar de uma vez nos {comContorno.length} territórios
+                </button>
+              </>
+            )}
+          </div>
+        )}
+
+        {etapa === 'confirmarTodos' && (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+            <div style={{ background: '#FFF8E7', border: '1px solid #F0C060', borderRadius: 10, padding: '12px 14px', fontSize: 14, color: '#412402', lineHeight: 1.6 }}>
+              As quadras dos {comContorno.length} territórios com contorno vão ser geradas e <strong>gravadas direto</strong>, sem a revisão de cada uma.
+              <br /><br />
+              • Territórios que já têm quadras são pulados<br />
+              • Leva alguns minutos (uma consulta por território)<br />
+              • Depois dá para apagar ou corrigir quadra por quadra, pelo mapa ou pela tela de Territórios
+            </div>
+            <div style={{ display: 'flex', gap: 10 }}>
+              <button onClick={() => setEtapa('selecao')} style={{ flex: 1, padding: '13px', fontSize: 14, fontWeight: 500, background: '#F7F7F7', color: '#555', border: '0.5px solid #DDD', borderRadius: 10, cursor: 'pointer' }}>
+                Cancelar
+              </button>
+              <button onClick={() => void gerarTodos()} style={{ flex: 2, padding: '13px', fontSize: 14, fontWeight: 600, background: '#378ADD', color: '#FFF', border: 'none', borderRadius: 10, cursor: 'pointer' }}>
+                ⚡ Pode gerar
+              </button>
+            </div>
+          </div>
+        )}
+
+        {(etapa === 'gerandoTodos' || etapa === 'resumo') && (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+            {etapa === 'gerandoTodos' && progresso && (
+              <div>
+                <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, color: '#666', marginBottom: 6 }}>
+                  <span>{progresso.nome}</span>
+                  <span>{progresso.atual}/{progresso.total}</span>
+                </div>
+                <div style={{ height: 8, background: '#EEEEEE', borderRadius: 4, overflow: 'hidden' }}>
+                  <div style={{ height: '100%', width: `${Math.round((progresso.atual / progresso.total) * 100)}%`, background: '#378ADD', borderRadius: 4, transition: 'width 0.3s' }} />
+                </div>
+                <p style={{ fontSize: 12, color: '#AAAAAA', marginTop: 8 }}>
+                  Não feche esta janela enquanto estiver rodando.
+                </p>
+              </div>
+            )}
+
+            {etapa === 'resumo' && (
+              <div style={{ background: '#EAF7EF', border: '1px solid #3BAD68', borderRadius: 10, padding: '12px 14px', fontSize: 14, color: '#04342C', lineHeight: 1.5 }}>
+                <strong>{totalGravadas} quadra(s)</strong> gravadas em {territoriosGravados} território(s).
+                {' '}Confira no mapa e ajuste o que precisar.
+              </div>
+            )}
+
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+              {resumo.map((linha, i) => (
+                <div key={i} style={{ display: 'flex', alignItems: 'baseline', gap: 8, fontSize: 13, color: '#444', padding: '4px 0', borderBottom: '0.5px solid #F3F3F3' }}>
+                  <span style={{ flexShrink: 0 }}>{ICONE[linha.situacao]}</span>
+                  <span style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{linha.territorio}</span>
+                  <span style={{ fontSize: 12, color: '#888', flexShrink: 0 }}>
+                    {linha.situacao === 'gravadas' && `${linha.quadras} quadras`}
+                    {linha.situacao === 'ja_tinha' && `já tinha ${linha.quadras}`}
+                    {linha.situacao === 'sem_quadras' && 'sem ruas no OSM'}
+                    {linha.situacao === 'erro' && 'erro'}
+                  </span>
+                </div>
+              ))}
+            </div>
+
+            {resumo.some((l) => l.situacao === 'erro') && (
+              <div style={{ background: '#FFF0F0', border: '1px solid #E05050', borderRadius: 10, padding: '10px 12px', fontSize: 12, color: '#501313', lineHeight: 1.5 }}>
+                {resumo.filter((l) => l.situacao === 'erro').map((l, i) => (
+                  <div key={i}>{l.territorio}: {l.detalhe}</div>
+                ))}
+              </div>
+            )}
           </div>
         )}
 
@@ -354,6 +522,17 @@ export default function ImportarOSM({ mapInstance: map, territorios, onConcluir,
           </div>
         )}
       </div>
+
+      {etapa === 'resumo' && (
+        <div style={{ padding: '14px 20px', borderTop: '0.5px solid #EEEEEE' }}>
+          <button onClick={onFechar} style={{
+            width: '100%', padding: '14px', fontSize: 15, fontWeight: 600,
+            background: VERDE, color: '#FFFFFF', border: 'none', borderRadius: 10, cursor: 'pointer',
+          }}>
+            Ver no mapa
+          </button>
+        </div>
+      )}
 
       {etapa === 'revisao' && (
         <div style={{ padding: '14px 20px', borderTop: '0.5px solid #EEEEEE', display: 'flex', gap: 10 }}>

@@ -2,8 +2,8 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import {
-  caixaDoContorno, consultaRuas, featureDaQuadra, gerarQuadras, lerRuasDoOverpass,
-  type Ponto, type RuaOSM,
+  caixaDoContorno, consultaRuas, featureDaQuadra, gerarQuadras, gerarQuadrasDoContorno,
+  lerRuasDoOverpass, type Ponto, type RuaOSM,
 } from '@/lib/quadrasOSM'
 import { gerarLados, nomeDaQuadra, proximaSequencia } from '@/lib/quadras'
 
@@ -179,4 +179,24 @@ test('tira fina entre a rua e a divisa não vira quadra', () => {
   const { quadras } = gerarQuadras({ contorno: contornoBaixo, ruas })
   assert.equal(quadras.length, 1)
   assert.ok(quadras[0].areaM2 > 20000, `deveria ser o quarteirão inteiro: ${quadras[0].areaM2}`)
+})
+
+test('caminho completo do território, com a consulta simulada', async () => {
+  let caixaConsultada: { sul: number; norte: number } | null = null
+  const resultado = await gerarQuadrasDoContorno(contornoTudo, {
+    buscar: async (caixa) => {
+      caixaConsultada = caixa
+      return ruasGrade()
+    },
+  })
+  assert.equal(resultado.quadras.length, 4)
+  assert.equal(resultado.ruasEncontradas, 6)
+  assert.ok(caixaConsultada, 'a consulta precisa receber a caixa do contorno')
+  assert.ok(caixaConsultada!.sul < LAT, 'a caixa precisa ter margem além do contorno')
+})
+
+test('território sem ruas no OSM não gera quadra nenhuma', async () => {
+  const resultado = await gerarQuadrasDoContorno(contornoTudo, { buscar: async () => [] })
+  assert.equal(resultado.quadras.length, 0)
+  assert.equal(resultado.ruasEncontradas, 0)
 })
