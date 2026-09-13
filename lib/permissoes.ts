@@ -43,7 +43,6 @@ export function usePaginaRestrita(perfisPermitidos: Perfil[]): ResultadoPermissa
     })
 
     return () => { ativo = false }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [router, chavePerfis])
 
   return { usuario, carregando, autorizado }

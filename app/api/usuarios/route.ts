@@ -1,16 +1,20 @@
-import { createClient } from '@supabase/supabase-js'
+import { createClient, type SupabaseClient } from '@supabase/supabase-js'
 import { NextResponse } from 'next/server'
 import type { NextRequest } from 'next/server'
 
-// Cliente com service role — só usado no servidor
-const supabaseAdmin = createClient(
-  process.env.NEXT_PUBLIC_SUPABASE_URL!,
-  process.env.SUPABASE_SERVICE_ROLE_KEY!,
-  { auth: { autoRefreshToken: false, persistSession: false } }
-)
+// Cliente com service role — só usado no servidor. Criado a cada requisição
+// para que o build não dependa da chave secreta.
+function criarClienteAdmin() {
+  const url = process.env.NEXT_PUBLIC_SUPABASE_URL
+  const chave = process.env.SUPABASE_SERVICE_ROLE_KEY
+  if (!url || !chave) {
+    throw new Error('Defina NEXT_PUBLIC_SUPABASE_URL e SUPABASE_SERVICE_ROLE_KEY.')
+  }
+  return createClient(url, chave, { auth: { autoRefreshToken: false, persistSession: false } })
+}
 
 // Só deixa passar quem está autenticado e tem perfil admin
-async function exigirAdmin(req: NextRequest) {
+async function exigirAdmin(req: NextRequest, supabaseAdmin: SupabaseClient) {
   const token = req.headers.get('authorization')?.replace('Bearer ', '')
   if (!token) return false
 
@@ -29,7 +33,8 @@ async function exigirAdmin(req: NextRequest) {
 // POST /api/usuarios — criar usuário
 export async function POST(req: NextRequest) {
   try {
-    if (!(await exigirAdmin(req))) {
+    const supabaseAdmin = criarClienteAdmin()
+    if (!(await exigirAdmin(req, supabaseAdmin))) {
       return NextResponse.json({ error: 'Acesso restrito a administradores.' }, { status: 403 })
     }
 
@@ -80,7 +85,8 @@ export async function POST(req: NextRequest) {
 // PATCH /api/usuarios — editar nome, email, perfil e/ou senha
 export async function PATCH(req: NextRequest) {
   try {
-    if (!(await exigirAdmin(req))) {
+    const supabaseAdmin = criarClienteAdmin()
+    if (!(await exigirAdmin(req, supabaseAdmin))) {
       return NextResponse.json({ error: 'Acesso restrito a administradores.' }, { status: 403 })
     }
 
@@ -132,7 +138,8 @@ export async function PATCH(req: NextRequest) {
 // DELETE /api/usuarios?id=xxx — excluir usuário
 export async function DELETE(req: NextRequest) {
   try {
-    if (!(await exigirAdmin(req))) {
+    const supabaseAdmin = criarClienteAdmin()
+    if (!(await exigirAdmin(req, supabaseAdmin))) {
       return NextResponse.json({ error: 'Acesso restrito a administradores.' }, { status: 403 })
     }
 

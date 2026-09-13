@@ -4,11 +4,24 @@ import { supabase, CORES_STATUS } from '@/lib/supabase'
 import { usePaginaRestrita } from '@/lib/permissoes'
 import { Carregando, SemPermissao } from '@/components/EstadoPagina'
 
+interface MarcacaoPendente {
+  id: string
+  status: string
+  observacao: string | null
+  criado_em: string
+  quadras: {
+    nome: string
+    territorio_id: string
+    territorios: { nome: string; numero: string } | null
+  } | null
+  usuarios: { nome: string } | null
+}
+
 export default function ValidarPage() {
   const { usuario, carregando: verificandoAcesso, autorizado } = usePaginaRestrita([
     'superintendente_grupo', 'superintendente_territorio', 'admin',
   ])
-  const [marcacoes, setMarcacoes] = useState<any[]>([])
+  const [marcacoes, setMarcacoes] = useState<MarcacaoPendente[]>([])
   const [carregando, setCarregando] = useState(true)
 
   useEffect(() => {
@@ -99,7 +112,7 @@ export default function ValidarPage() {
                     {cor?.label}
                   </span>
                 </div>
-                {m.observacao && <p style={{ fontSize: 15, color: '#555', marginBottom: 12, fontStyle: 'italic' }}>"{m.observacao}"</p>}
+                {m.observacao && <p style={{ fontSize: 15, color: '#555', marginBottom: 12, fontStyle: 'italic' }}>&ldquo;{m.observacao}&rdquo;</p>}
                 <div style={{ display: 'flex', gap: 10 }}>
                   <button onClick={() => validar(m.id)} className="btn-grande btn-verde" style={{ flex: 2, minHeight: 52 }}>✅ Aprovar</button>
                   <button onClick={() => rejeitar(m.id)} className="btn-grande btn-vermelho" style={{ flex: 1, minHeight: 52 }}>✕ Rejeitar</button>

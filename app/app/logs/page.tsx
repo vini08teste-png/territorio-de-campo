@@ -89,6 +89,18 @@ function formatarData(iso: string) {
   })
 }
 
+// Momento em que o usuário "limpou a tela" de logs (guardado só neste navegador)
+function lerLimpoEm(): number | null {
+  if (typeof window === 'undefined') return null
+  try {
+    const salvo = localStorage.getItem('logsLimpoEm')
+    if (salvo) return Number(salvo)
+  } catch {
+    // localStorage indisponível — ignora
+  }
+  return null
+}
+
 // ── Componente principal ───────────────────────────────────────────────────────
 export default function LogsPage() {
   const [loading, setLoading] = useState(true)
@@ -97,16 +109,7 @@ export default function LogsPage() {
   const [filtroPerfil, setFiltroPerfil] = useState<string>('todos')
   const [busca, setBusca] = useState('')
   const [autorizado, setAutorizado] = useState(false)
-  const [limpoEm, setLimpoEm] = useState<number | null>(null)
-
-  useEffect(() => {
-    try {
-      const salvo = localStorage.getItem('logsLimpoEm')
-      if (salvo) setLimpoEm(Number(salvo))
-    } catch {
-      // localStorage indisponível — ignora
-    }
-  }, [])
+  const [limpoEm, setLimpoEm] = useState<number | null>(lerLimpoEm)
 
   function limparTela() {
     const agora = Date.now()
