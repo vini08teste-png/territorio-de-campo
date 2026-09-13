@@ -2,9 +2,26 @@
 import { useEffect, useState } from 'react'
 import { supabase, CORES_STATUS } from '@/lib/supabase'
 
+interface MarcacaoHistorico {
+  id: string
+  status: string
+  criado_em: string
+  validado_por: string | null
+  quadras: { nome: string } | null
+}
+
+interface PontoHistorico {
+  id: string
+  lat: number
+  lng: number
+  observacao: string | null
+  criado_em: string
+  quadras: { nome: string } | null
+}
+
 export default function HistoricoPage() {
-  const [marcacoes, setMarcacoes] = useState<any[]>([])
-  const [pontos, setPontos] = useState<any[]>([])
+  const [marcacoes, setMarcacoes] = useState<MarcacaoHistorico[]>([])
+  const [pontos, setPontos] = useState<PontoHistorico[]>([])
 
   useEffect(() => {
     async function carregar() {
@@ -34,7 +51,7 @@ export default function HistoricoPage() {
                 <div style={{ fontSize: 14, color: '#666', marginTop: 4 }}>
                   📍 {p.lat.toFixed(6)}, {p.lng.toFixed(6)}
                 </div>
-                {p.observacao && <div style={{ fontSize: 14, color: '#888', marginTop: 4 }}>"{p.observacao}"</div>}
+                {p.observacao && <div style={{ fontSize: 14, color: '#888', marginTop: 4 }}>&ldquo;{p.observacao}&rdquo;</div>}
                 <div style={{ fontSize: 13, color: '#aaa', marginTop: 4 }}>{new Date(p.criado_em).toLocaleString('pt-BR')}</div>
               </div>
             ))}

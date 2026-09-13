@@ -343,27 +343,32 @@ export default function Mapa() {
   async function salvarObservacaoPonto() {
     if (!editandoPonto) return
     setSalvandoPonto(true)
-    const { error } = await supabase.from('pontos_parada')
-      .update({ observacao: pontoObs.trim() }).eq('id', editandoPonto.id)
+    // .select() devolve as linhas alteradas: vazio significa que o banco negou (RLS)
+    const { data: alterados, error } = await supabase.from('pontos_parada')
+      .update({ observacao: pontoObs.trim() }).eq('id', editandoPonto.id).select('id')
     setSalvandoPonto(false)
-    if (!error) {
-      setModalPonto(false)
-      mostrarFeedback('Observação salva!')
-      const { data } = await supabase.from('pontos_parada').select('*, usuario:usuario_id(nome)').order('criado_em', { ascending: false })
-      setTodosPontos(data ?? [])
-      renderizarPontos(mapInstanceRef.current, data ?? [])
+    if (error || !alterados?.length) {
+      mostrarFeedback('⚠️ Só quem marcou o ponto (ou ST/admin) pode editá-lo.')
+      return
     }
+    setModalPonto(false)
+    mostrarFeedback('Observação salva!')
+    const { data } = await supabase.from('pontos_parada').select('*, usuario:usuario_id(nome)').order('criado_em', { ascending: false })
+    setTodosPontos(data ?? [])
+    renderizarPontos(mapInstanceRef.current, data ?? [])
   }
 
   async function apagarPonto(id: string) {
     if (!confirm('Apagar este ponto de parada?')) return
-    const { error } = await supabase.from('pontos_parada').delete().eq('id', id)
-    if (!error) {
-      mostrarFeedback('Ponto apagado.')
-      const { data } = await supabase.from('pontos_parada').select('*, usuario:usuario_id(nome)').order('criado_em', { ascending: false })
-      setTodosPontos(data ?? [])
-      renderizarPontos(mapInstanceRef.current, data ?? [])
+    const { data: apagados, error } = await supabase.from('pontos_parada').delete().eq('id', id).select('id')
+    if (error || !apagados?.length) {
+      mostrarFeedback('⚠️ Só quem marcou o ponto (ou ST/admin) pode apagá-lo.')
+      return
     }
+    mostrarFeedback('Ponto apagado.')
+    const { data } = await supabase.from('pontos_parada').select('*, usuario:usuario_id(nome)').order('criado_em', { ascending: false })
+    setTodosPontos(data ?? [])
+    renderizarPontos(mapInstanceRef.current, data ?? [])
   }
 
   function editarPontoNoMapa(p: PontoParada) {

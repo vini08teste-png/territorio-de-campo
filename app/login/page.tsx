@@ -1,7 +1,7 @@
 'use client'
 
-import { Suspense, useEffect, useState } from 'react'
-import { useRouter, useSearchParams } from 'next/navigation'
+import { Suspense, useState } from 'react'
+import { useSearchParams } from 'next/navigation'
 import { createBrowserClient } from '@supabase/ssr'
 import Image from 'next/image'
 
@@ -13,19 +13,18 @@ export default function LoginPage() {
   )
 }
 
+const MENSAGEM_DESATIVADO = 'Seu acesso foi desativado. Fale com o administrador.'
+
 function LoginForm() {
-  const router = useRouter()
   const searchParams = useSearchParams()
   const [email, setEmail] = useState('')
   const [senha, setSenha] = useState('')
-  const [erro, setErro] = useState('')
+  // Quem foi deslogado por estar desativado chega com ?desativado=1
+  const [erro, setErro] = useState(() => {
+    if (searchParams.get('desativado') === '1') return MENSAGEM_DESATIVADO
+    return ''
+  })
   const [carregando, setCarregando] = useState(false)
-
-  useEffect(() => {
-    if (searchParams.get('desativado') === '1') {
-      setErro('Seu acesso foi desativado. Fale com o administrador.')
-    }
-  }, [searchParams])
 
   async function handleLogin(e: React.FormEvent) {
     e.preventDefault()
@@ -49,7 +48,7 @@ function LoginForm() {
 
     if (!usuario?.ativo) {
       await supabase.auth.signOut()
-      setErro('Seu acesso foi desativado. Fale com o administrador.')
+      setErro(MENSAGEM_DESATIVADO)
       setCarregando(false)
       return
     }

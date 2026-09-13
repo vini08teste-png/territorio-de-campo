@@ -66,10 +66,8 @@ export default function AnalisePage() {
   const [busca, setBusca] = useState('')
   const [territoriosVencidos, setTerritoriosVencidos] = useState(0)
 
+  // Só é chamada depois que o acesso foi verificado (ver useEffect abaixo)
   const carregar = useCallback(async () => {
-    setLoading(true)
-    if (!usuario) { setLoading(false); return }
-
     const [{ data: territorios }, { data: quadras }, { data: designacoesSG }, { data: config }] = await Promise.all([
       supabase.from('territorios').select('*').order('numero'),
       supabase.from('quadras').select('*'),
@@ -105,6 +103,8 @@ export default function AnalisePage() {
 
   useEffect(() => {
     if (!usuario || !autorizado) return
+    // carregar só chama setState depois dos awaits (mesmo padrão de designar/configuracoes)
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     void carregar()
   }, [usuario, autorizado, carregar])
 
@@ -248,7 +248,7 @@ export default function AnalisePage() {
         />
         <select
           value={ordenar}
-          onChange={(e) => setOrdenar(e.target.value as any)}
+          onChange={(e) => setOrdenar(e.target.value as typeof ordenar)}
           style={{
             padding: '10px 14px', fontSize: 14, border: '1px solid #DDDDDD',
             borderRadius: 10, background: '#FAFAFA', color: '#1A1A1A',
