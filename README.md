@@ -1,36 +1,64 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Território de Campo
 
-## Getting Started
+App para gerenciar territórios de campo: desenhar quadras no mapa, marcar status de cada lado, registrar pontos de parada com GPS, designar territórios e controlar usuários por hierarquia.
 
-First, run the development server:
+## Rodando localmente
 
 ```bash
+npm install
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Abra [http://localhost:3000](http://localhost:3000). Precisa de um projeto Supabase configurado (ver `BANCO_DE_DADOS.sql` e variáveis de ambiente `.env.local`).
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+## Estrutura do projeto
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+```
+app/
+  layout.tsx            → layout raiz (carrega Leaflet/CSS globais)
+  page.tsx               → redirecionamento inicial
+  login/page.tsx          → tela de login
+  api/usuarios/route.ts    → API para criar/gerenciar usuários (server-side)
 
-## Learn More
+  app/                    → tudo que fica DENTRO do sistema logado
+    layout.tsx             → header + menu (mobile e desktop) por perfil
+    page.tsx                → tela do Mapa (usa components/Mapa.tsx)
+    territorios/page.tsx      → lista de territórios
+    designar/page.tsx          → designar território a um publicador
+    validar/page.tsx            → validar territórios devolvidos
+    progresso/page.tsx           → acompanhamento de progresso
+    analise/page.tsx              → relatórios/análise
+    historico/page.tsx             → histórico de marcações
+    relatorio/page.tsx              → relatório de saída
+    usuarios/page.tsx                → lista de usuários (admin)
+    usuarios/novo/page.tsx            → criar usuário (admin)
+    hierarquia/page.tsx                → hierarquia de perfis (admin)
+    configuracoes/page.tsx              → config gerais (admin)
+    logs/page.tsx                        → logs do sistema
+    perfil/page.tsx                       → perfil do usuário logado
 
-To learn more about Next.js, take a look at the following resources:
+components/
+  Mapa.tsx                → componente principal do mapa (Leaflet): quadras, lados, pontos de parada
+  ImportarOSM.tsx           → importar quadras do OpenStreetMap
+  EstadoPagina.tsx            → estados de loading/vazio/erro reutilizáveis
+  AcessoNegadoToast.tsx         → aviso de acesso negado
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+lib/
+  supabase.ts              → cliente Supabase + cores/labels de status e perfil
+  auth.ts                   → login/logout
+  permissoes.ts               → regras de permissão por hierarquia de perfil
+  prazoTerritorio.ts            → cálculo de prazo/atraso de território
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+BANCO_DE_DADOS.sql        → schema completo do banco (Supabase/Postgres)
+SQL_CORRIGIR_ADMIN.sql     → script para corrigir/promover admin
+SQL_PRAZO_TERRITORIO.sql    → script relacionado a prazos de território
+vercel.json                  → config de deploy na Vercel
+```
 
-## Deploy on Vercel
+## Perfis de usuário
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+Hierarquia (cada nível herda o que o de baixo pode fazer): `dirigente` → `superintendente_grupo` → `superintendente_territorio` → `admin`. As permissões e as rotas visíveis no menu mudam conforme o perfil (ver `app/app/layout.tsx` e `lib/permissoes.ts`).
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+## Deploy
+
+Deploy automático na Vercel a cada push na branch `main`.
