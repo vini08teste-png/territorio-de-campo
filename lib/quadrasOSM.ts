@@ -515,6 +515,29 @@ export function gerarQuadras(opcoes: {
   return { quadras: ordenarQuadras(quadras), descartadas }
 }
 
+export interface QuadrasDoTerritorio extends ResultadoGeracao {
+  /** Quantas ruas vieram do OSM, para distinguir "região sem mapeamento" de "contorno errado". */
+  ruasEncontradas: number
+}
+
+/**
+ * O caminho completo de um território: contorno → ruas na Overpass → quadras.
+ * `buscar` existe para os testes rodarem sem rede.
+ */
+export async function gerarQuadrasDoContorno(contorno: unknown, opcoes: {
+  sinal?: AbortSignal
+  buscar?: (caixa: Caixa, sinal?: AbortSignal) => Promise<RuaOSM[]>
+} = {}): Promise<QuadrasDoTerritorio> {
+  const poligonos = poligonosDoContorno(contorno).map(
+    (poligono) => poligono.map((anel) => anel.map((p) => [p[0], p[1]] as Ponto))
+  )
+  const caixa = caixaDoContorno(poligonos)
+  if (!caixa) return { quadras: [], descartadas: 0, ruasEncontradas: 0 }
+
+  const ruas = await (opcoes.buscar ?? buscarRuas)(caixa, opcoes.sinal)
+  return { ...gerarQuadras({ contorno, ruas }), ruasEncontradas: ruas.length }
+}
+
 /** Norte → sul e, dentro da mesma faixa, oeste → leste: a ordem da numeração. */
 export function ordenarQuadras(quadras: QuadraGerada[]): QuadraGerada[] {
   const faixa = 120 / METROS_POR_GRAU_LAT // ~120 m: quadras vizinhas na mesma linha
