@@ -29,7 +29,8 @@ export default function ValidarPage() {
 
     async function carregar() {
       let query = supabase.from('marcacoes')
-        .select('*, quadras(nome, territorio_id, territorios(nome, numero)), usuarios(nome)')
+        // marcacoes tem duas FKs para usuarios (usuario_id e validado_por): o embed precisa dizer qual
+        .select('*, quadras(nome, territorio_id, territorios(nome, numero)), usuarios:usuario_id(nome)')
         .is('validado_por', null)
         .order('criado_em', { ascending: false })
 
