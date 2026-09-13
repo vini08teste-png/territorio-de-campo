@@ -4,6 +4,7 @@
 import { useEffect, useRef, useState, useCallback } from 'react'
 import { supabase, CORES_STATUS } from '@/lib/supabase'
 import ImportarOSM from '@/components/ImportarOSM'
+import { gerarLados } from '@/lib/quadras'
 import { escaparHtml, linkComoChegar, resumoPublicadoresFamilias } from '@/lib/territorio'
 
 
@@ -69,17 +70,6 @@ function calcularProgresso(lados: Lado[]): number {
   if (!lados || lados.length === 0) return 0
   const soma = lados.reduce((acc, l) => acc + (PESO[l.status] ?? 0), 0)
   return Math.round((soma / lados.length) * 100)
-}
-
-function gerarLados(coordinates: [number, number][]): Lado[] {
-  const pontos = coordinates.slice(0, -1)
-  return pontos.map((ponto, i) => ({
-    id: crypto.randomUUID(),
-    indice: i,
-    inicio: ponto,
-    fim: pontos[(i + 1) % pontos.length],
-    status: 'nao_iniciado' as StatusQuadra,
-  }))
 }
 
 // Mesmos pesos da tela de territórios
@@ -535,13 +525,13 @@ export default function Mapa() {
           }}>
             ✏️ Desenhar quadra
           </button>
-          {/* <button onClick={() => setPainelOSM(true)} style={{
+          <button onClick={() => setPainelOSM(true)} style={{
             background: '#378ADD', color: '#fff', border: 'none', borderRadius: 12,
             padding: '12px 18px', fontSize: 15, fontWeight: 600,
             cursor: 'pointer', boxShadow: '0 2px 8px rgba(0,0,0,0.2)',
           }}>
-            🌐 Importar do OSM
-          </button> */}
+            🌐 Gerar quadras pelas ruas
+          </button>
         </div>
       )}
 

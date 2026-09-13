@@ -6,7 +6,8 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "test": "node --import ./tests/alias.mjs --test \"tests/**/*.test.ts\""
   },
   "dependencies": {
     "@supabase/auth-helpers-nextjs": "^0.15.0",
