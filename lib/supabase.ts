@@ -22,7 +22,10 @@ export type Territorio = {
   numero: string
   bairro: string
   status: string
-  geojson: Record<string, unknown>
+  geojson: Record<string, unknown> | null
+  publicadores: number | null
+  familias: number | null
+  link_maps: string | null
   criado_por: string
   criado_em: string
 }

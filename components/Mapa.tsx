@@ -4,6 +4,7 @@
 import { useEffect, useRef, useState, useCallback } from 'react'
 import { supabase, CORES_STATUS } from '@/lib/supabase'
 import ImportarOSM from '@/components/ImportarOSM'
+import { escaparHtml, linkComoChegar, resumoPublicadoresFamilias } from '@/lib/territorio'
 
 
 type StatusQuadra = 'nao_iniciado' | 'em_andamento' | 'parcial' | 'concluido' | 'pendente'
@@ -34,7 +35,11 @@ interface Quadra {
 interface Territorio {
   id: string
   nome: string
-  numero: number
+  numero: string
+  geojson: GeoJSONFeature | null
+  publicadores: number | null
+  familias: number | null
+  link_maps: string | null
 }
 
 interface PontoParada {
@@ -77,10 +82,46 @@ function gerarLados(coordinates: [number, number][]): Lado[] {
   }))
 }
 
+// Mesmos pesos da tela de territórios
+const PESO_TERRITORIO: Record<StatusQuadra, number> = {
+  concluido: 1, parcial: 0.5, em_andamento: 0.25,
+  nao_iniciado: 0, pendente: 0,
+}
+
+function progressoDoTerritorio(quadras: Quadra[]): number {
+  if (quadras.length === 0) return 0
+  const soma = quadras.reduce((acc, q) => acc + (PESO_TERRITORIO[q.status] ?? 0), 0)
+  return Math.round((soma / quadras.length) * 100)
+}
+
+function corDoProgresso(progresso: number): string {
+  if (progresso >= 100) return '#3BAD68'
+  if (progresso >= 50) return '#378ADD'
+  if (progresso > 0) return '#F0C060'
+  return '#9E9E9E'
+}
+
+function popupDoTerritorio(territorio: Territorio, progresso: number, totalQuadras: number): string {
+  const linhas = [
+    `<b style="font-size:14px">#${escaparHtml(String(territorio.numero))} — ${escaparHtml(territorio.nome)}</b>`,
+    `<span style="color:#555">${totalQuadras} quadra(s) · ${progresso}% trabalhado</span>`,
+  ]
+  const resumo = resumoPublicadoresFamilias(territorio)
+  if (resumo) {
+    linhas.push(`<span style="color:#555">${escaparHtml(resumo)}</span>`)
+  }
+  const rota = linkComoChegar(territorio)
+  if (rota) {
+    linhas.push(`<a href="${escaparHtml(rota)}" target="_blank" rel="noreferrer" style="color:#378ADD;font-weight:600">🧭 Como chegar</a>`)
+  }
+  return `<div style="font-size:13px;line-height:1.6;min-width:180px">${linhas.join('<br/>')}</div>`
+}
+
 export default function Mapa() {
   const mapRef = useRef<HTMLDivElement>(null)
   const mapInstanceRef = useRef<any>(null)
   const layersRef = useRef<any[]>([])
+  const territorioLayersRef = useRef<any[]>([])
   const ladoLayersRef = useRef<Map<string, any>>(new Map())
   const pontoLayersRef = useRef<any[]>([])
   const pendingGeoJsonRef = useRef<any>(null)
@@ -154,9 +195,9 @@ export default function Mapa() {
       marker.bindPopup(`
         <div style="font-size:13px;min-width:200px;line-height:1.6">
           <b style="color:#E05050;font-size:14px">📍 Ponto de parada</b><br/>
-          <span style="color:#555">👤 ${nome}</span><br/>
+          <span style="color:#555">👤 ${escaparHtml(nome)}</span><br/>
           ${data ? `<span style="color:#888">🕐 ${data}</span><br/>` : ''}
-          ${p.observacao ? `<span style="color:#333;font-style:italic">"${p.observacao}"</span><br/>` : '<span style="color:#AAAAAA;font-style:italic">Sem observação</span><br/>'}
+          ${p.observacao ? `<span style="color:#333;font-style:italic">"${escaparHtml(p.observacao)}"</span><br/>` : '<span style="color:#AAAAAA;font-style:italic">Sem observação</span><br/>'}
           <a href="${mapsUrl}" target="_blank" style="color:#378ADD;font-size:12px;font-weight:600">🗺️ Abrir no Google Maps</a>
           <div style="display:flex;gap:6px;margin-top:8px">
             <button data-acao="editar-ponto" style="flex:1;padding:6px 8px;font-size:12px;font-weight:600;background:#F0F0F0;border:0.5px solid #DDD;border-radius:6px;color:#444;cursor:pointer">✏️ Editar</button>
@@ -199,11 +240,30 @@ export default function Mapa() {
     const { data: usuarioData } = await supabase.from('usuarios').select('*').eq('id', user.id).single()
     if (usuarioData) setUsuario(usuarioData)
 
-    const { data: terrsData } = await supabase.from('territorios').select('id, nome, numero').order('numero')
+    const { data: terrsData } = await supabase.from('territorios')
+      .select('id, nome, numero, geojson, publicadores, familias, link_maps').order('numero')
     setTerritorios(terrsData ?? [])
 
     const { data: quadrasData } = await supabase.from('quadras').select('*')
     if (!quadrasData) return
+
+    // Contornos dos territórios, numa camada abaixo das quadras
+    territorioLayersRef.current.forEach((l) => m.removeLayer(l))
+    territorioLayersRef.current = []
+    for (const t of (terrsData ?? []) as Territorio[]) {
+      if (!t.geojson) continue
+      const quadrasDoTerritorio = (quadrasData as Quadra[]).filter((q) => q.territorio_id === t.id)
+      const progresso = progressoDoTerritorio(quadrasDoTerritorio)
+      const layer = L.geoJSON(t.geojson, {
+        pane: 'territorios',
+        style: { color: '#1F3A5F', weight: 3, fillColor: corDoProgresso(progresso), fillOpacity: 0.2 },
+      }).addTo(m)
+      layer.bindTooltip(String(t.numero), { permanent: true, direction: 'center', className: 'rotulo-territorio' })
+      layer.bindPopup(popupDoTerritorio(t, progresso, quadrasDoTerritorio.length), { maxWidth: 260 })
+      // Tocar no território aproxima o mapa nas quadras dele
+      layer.on('click', () => m.fitBounds(layer.getBounds(), { maxZoom: 17, padding: [24, 24] }))
+      territorioLayersRef.current.push(layer)
+    }
 
     layersRef.current.forEach((l) => m.removeLayer(l))
     layersRef.current = []
@@ -236,9 +296,24 @@ export default function Mapa() {
     if (!L) return
 
     const map = L.map(mapRef.current, { center: [-6.52, -49.85], zoom: 14, zoomControl: false })
-    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    const ruas = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
       attribution: '© OpenStreetMap', maxZoom: 20,
-    }).addTo(map)
+    })
+    const esri = 'https://server.arcgisonline.com/ArcGIS/rest/services'
+    const satelite = L.layerGroup([
+      L.tileLayer(`${esri}/World_Imagery/MapServer/tile/{z}/{y}/{x}`, {
+        attribution: 'Imagens © Esri, Maxar, Earthstar Geographics', maxNativeZoom: 19, maxZoom: 20,
+      }),
+      // Nomes de ruas por cima do satélite
+      L.tileLayer(`${esri}/Reference/World_Transportation/MapServer/tile/{z}/{y}/{x}`, {
+        maxNativeZoom: 19, maxZoom: 20,
+      }),
+    ])
+    ruas.addTo(map)
+    L.control.layers({ Ruas: ruas, 'Satélite': satelite }, undefined, { position: 'topright' }).addTo(map)
+
+    map.createPane('territorios')
+    map.getPane('territorios').style.zIndex = '390'
     L.control.zoom({ position: 'bottomright' }).addTo(map)
     mapInstanceRef.current = map
     setMapInstance(map)
