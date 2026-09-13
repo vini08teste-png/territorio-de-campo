@@ -1,256 +1,211 @@
 'use client'
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
-import { useState, useEffect, useRef, useCallback } from 'react'
-import { supabase } from '@/lib/supabase'
+// Painel que gera as quadras de um território a partir das ruas do
+// OpenStreetMap: escolhe o território (precisa ter contorno), monta a prévia no
+// mapa e só grava depois que o ST ou admin desmarca o que saiu errado.
 
-interface Territorio {
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { supabase } from '@/lib/supabase'
+import { gerarLados, nomeDaQuadra, proximaSequencia } from '@/lib/quadras'
+import {
+  buscarRuas, caixaDoContorno, featureDaQuadra, gerarQuadras, type QuadraGerada,
+} from '@/lib/quadrasOSM'
+import { poligonosDoContorno } from '@/lib/territorio'
+
+interface TerritorioOpcao {
   id: string
   nome: string
   numero: string
-}
-
-interface OsmWay {
-  id: number
-  nome: string
-  geometry: { lat: number; lon: number }[]
-  tags: Record<string, string>
+  geojson: unknown
 }
 
 interface Props {
   mapInstance: any // instância do Leaflet já inicializada
-  territorios: Territorio[]
+  territorios: TerritorioOpcao[]
   onConcluir: () => void // callback para recarregar quadras
   onFechar: () => void
 }
 
-function gerarLadosFromCoords(coords: [number, number][]): object[] {
-  const pontos = coords.slice(0, -1)
-  return pontos.map((ponto, i) => ({
-    id: crypto.randomUUID(),
-    indice: i,
-    inicio: ponto,
-    fim: pontos[(i + 1) % pontos.length],
-    status: 'nao_iniciado',
-  }))
+type Etapa = 'selecao' | 'buscando' | 'revisao' | 'gravando' | 'erro'
+
+const VERDE = '#3BAD68'
+const CINZA = '#9E9E9E'
+
+function mensagemDeErro(erro: unknown): string {
+  if (erro instanceof Error) return erro.message
+  return 'Não foi possível gerar as quadras.'
 }
 
 export default function ImportarOSM({ mapInstance: map, territorios, onConcluir, onFechar }: Props) {
-  const [etapa, setEtapa] = useState<'instrucao' | 'selecionando' | 'carregando' | 'revisao' | 'importando' | 'erro'>('instrucao')
-  const [waysSugeridos, setWaysSugeridos] = useState<OsmWay[]>([])
-  const [selecionados, setSelecionados] = useState<Set<number>>(new Set())
+  const [etapa, setEtapa] = useState<Etapa>('selecao')
   const [territorioId, setTerritorioId] = useState('')
-  const [prefixoNome, setPrefixoNome] = useState('Quadra')
+  const [quadras, setQuadras] = useState<QuadraGerada[]>([])
+  const [selecionadas, setSelecionadas] = useState<Set<number>>(new Set())
+  const [descartadas, setDescartadas] = useState(0)
+  const [quadrasExistentes, setQuadrasExistentes] = useState<string[]>([])
   const [erroMsg, setErroMsg] = useState('')
-  const [progresso, setProgresso] = useState(0)
-  const previewLayersRef = useRef<any[]>([])
-  const retanguloLayerRef = useRef<any>(null)
+  const previewRef = useRef<any[]>([])
+  const abortRef = useRef<AbortController | null>(null)
 
-  const L = typeof window !== 'undefined' ? (window as any).L : null
+  const comContorno = useMemo(
+    () => territorios.filter((t) => poligonosDoContorno(t.geojson).length > 0),
+    [territorios]
+  )
+  const semContorno = territorios.length - comContorno.length
+  const territorio = comContorno.find((t) => t.id === territorioId) ?? null
 
-  // Limpar layers de preview ao desmontar
-  useEffect(() => {
-    return () => {
-      previewLayersRef.current.forEach((l) => { try { map.removeLayer(l) } catch {} })
-      if (retanguloLayerRef.current) { try { map.removeLayer(retanguloLayerRef.current) } catch {} }
-    }
+  const limparPreview = useCallback(() => {
+    previewRef.current.forEach((camada) => { try { map.removeLayer(camada) } catch {} })
+    previewRef.current = []
   }, [map])
 
-  // ── Renderizar pré-visualização no mapa ────────────────────────────────────
-  const renderizarPreview = useCallback((ways: OsmWay[]) => {
-    if (!L) return
-    previewLayersRef.current.forEach((l) => { try { map.removeLayer(l) } catch {} })
-    previewLayersRef.current = []
-    ways.forEach((way) => {
-      const coords = way.geometry.map((g) => [g.lat, g.lon] as [number, number])
-      const layer = L.polygon(coords, {
-        color: '#3BAD68', fillColor: '#B8EAC8', fillOpacity: 0.5, weight: 2,
-      }).addTo(map)
-      layer.bindTooltip(way.nome, { permanent: false, direction: 'center' })
-      previewLayersRef.current.push(layer)
+  useEffect(() => () => {
+    abortRef.current?.abort()
+    previewRef.current.forEach((camada) => { try { map.removeLayer(camada) } catch {} })
+    previewRef.current = []
+  }, [map])
+
+  // Nome provisório de cada quadra, na ordem em que serão gravadas
+  const nomes = useMemo(() => {
+    if (!territorio) return new Map<number, string>()
+    let sequencia = proximaSequencia(quadrasExistentes, territorio.numero)
+    const mapa = new Map<number, string>()
+    quadras.forEach((_, i) => {
+      if (!selecionadas.has(i)) return
+      mapa.set(i, nomeDaQuadra(territorio.numero, sequencia))
+      sequencia++
     })
-  }, [L, map])
+    return mapa
+  }, [quadras, selecionadas, quadrasExistentes, territorio])
 
-  // ── Consultar Overpass API ─────────────────────────────────────────────────
-  const buscarOSM = useCallback(async (s: number, w: number, n: number, e: number) => {
-    setEtapa('carregando')
+  // Rótulo com o nome que cada quadra vai receber ao gravar
+  useEffect(() => {
+    previewRef.current.forEach((camada, i) => {
+      const nome = nomes.get(i)
+      if (nome) camada.bindTooltip(nome, { permanent: true, direction: 'center', className: 'rotulo-quadra' })
+      else camada.unbindTooltip()
+    })
+  }, [nomes])
 
-    // Query Overpass — busca landuse + building + place para cobrir diferentes qualidades de dado OSM
-  const query = `
-  [out:json][timeout:60];
-  (
-    way["landuse"~"residential|commercial|industrial|retail"](${s},${w},${n},${e});
-    way["place"~"block|neighbourhood|quarter"](${s},${w},${n},${e});
-  );
-  out geom;
-`
+  const estiloDaPrevia = useCallback((selecionada: boolean) => ({
+    color: selecionada ? VERDE : CINZA,
+    weight: selecionada ? 2 : 1,
+    dashArray: selecionada ? undefined : '4 4',
+    fillColor: selecionada ? '#B8EAC8' : '#EEEEEE',
+    fillOpacity: selecionada ? 0.45 : 0.15,
+  }), [])
 
+  const alternar = useCallback((indice: number) => {
+    setSelecionadas((anterior) => {
+      const proxima = new Set(anterior)
+      if (proxima.has(indice)) proxima.delete(indice)
+      else proxima.add(indice)
+      previewRef.current[indice]?.setStyle(estiloDaPrevia(proxima.has(indice)))
+      return proxima
+    })
+  }, [estiloDaPrevia])
+
+  // ── Gerar a prévia ─────────────────────────────────────────────────────────
+  const gerar = useCallback(async () => {
+    if (!territorio) return
+    const L = (window as any).L
+    abortRef.current?.abort()
+    const controle = new AbortController()
+    abortRef.current = controle
+
+    setEtapa('buscando')
+    limparPreview()
     try {
-      const res = await fetch('https://overpass-api.de/api/interpreter', {
-        method: 'POST',
-        body: query,
-        headers: { 'Content-Type': 'text/plain' },
-      })
+      const poligonos = poligonosDoContorno(territorio.geojson) as [number, number][][][]
+      const caixa = caixaDoContorno(poligonos)
+      if (!caixa) throw new Error('O contorno deste território está vazio.')
 
-      if (!res.ok) throw new Error('Erro na API do OSM')
-      const data = await res.json() as { elements: any[] }
+      const [ruas, { data: jaGravadas }] = await Promise.all([
+        buscarRuas(caixa, controle.signal),
+        supabase.from('quadras').select('nome').eq('territorio_id', territorio.id),
+      ])
+      if (controle.signal.aborted) return
 
-      // Filtrar apenas ways fechados com geometria válida (polígonos)
-      const ways: OsmWay[] = data.elements
-        .filter((el: any) =>
-          el.type === 'way' &&
-          el.geometry?.length >= 4 &&
-          // Verificar se é fechado (primeiro == último ponto)
-          el.geometry[0].lat === el.geometry[el.geometry.length - 1].lat
+      const resultado = gerarQuadras({ contorno: territorio.geojson, ruas })
+      if (resultado.quadras.length === 0) {
+        throw new Error(
+          ruas.length === 0
+            ? 'O OpenStreetMap não tem ruas mapeadas nesta região. Desenhe as quadras à mão ou cadastre as ruas no OSM.'
+            : 'As ruas encontradas não fecham nenhuma quadra dentro do contorno. Confira o contorno do território.'
         )
-        .map((el: any, idx: number) => ({
-          id: el.id,
-          nome: el.tags?.name ?? el.tags?.['addr:street'] ?? `${prefixoNome} ${idx + 1}`,
-          geometry: el.geometry,
-          tags: el.tags ?? {},
-        }))
-
-      if (ways.length === 0) {
-        setErroMsg('Nenhuma quadra encontrada nesta área. Tente uma área diferente ou com mais dados no OpenStreetMap.')
-        setEtapa('erro')
-        return
       }
 
-      setWaysSugeridos(ways)
-      // Selecionar todos por padrão
-      setSelecionados(new Set(ways.map((w) => w.id)))
-      renderizarPreview(ways)
+      setQuadrasExistentes((jaGravadas ?? []).map((q: { nome: string }) => q.nome))
+      setQuadras(resultado.quadras)
+      setDescartadas(resultado.descartadas)
+      setSelecionadas(new Set(resultado.quadras.map((_, i) => i)))
+
+      const camadas = resultado.quadras.map((quadra, i) => {
+        const pontos = quadra.anel.map(([lng, lat]) => [lat, lng] as [number, number])
+        const camada = L.polygon(pontos, estiloDaPrevia(true)).addTo(map)
+        camada.on('click', (evento: any) => {
+          L.DomEvent.stopPropagation(evento)
+          alternar(i)
+        })
+        return camada
+      })
+      previewRef.current = camadas
+      const grupo = L.featureGroup(camadas)
+      map.fitBounds(grupo.getBounds(), { padding: [32, 32] })
       setEtapa('revisao')
-    } catch {
-      setErroMsg('Erro ao consultar o OpenStreetMap. Verifique sua conexão.')
+    } catch (erro) {
+      if (controle.signal.aborted) return
+      setErroMsg(mensagemDeErro(erro))
       setEtapa('erro')
     }
-  }, [prefixoNome, renderizarPreview])
+  }, [territorio, map, limparPreview, estiloDaPrevia, alternar])
 
-  // ── Ativar seleção de retângulo ────────────────────────────────────────────
-  const ativarRetangulo = useCallback(() => {
-    if (!L || !L.Draw) return
-    setEtapa('selecionando')
-
-    const drawControl = new L.Control.Draw({
-      draw: {
-        rectangle: { shapeOptions: { color: '#378ADD', weight: 2, fillOpacity: 0.1 } },
-        polygon: false, polyline: false, circle: false, marker: false, circlemarker: false,
-      },
-      edit: false,
-    })
-    map.addControl(drawControl)
-    new L.Draw.Rectangle(map, drawControl.options.draw.rectangle).enable()
-
-    map.once(L.Draw.Event.CREATED, async (e: any) => {
-      map.removeControl(drawControl)
-      const bounds = e.layer.getBounds()
-      retanguloLayerRef.current = e.layer.addTo(map)
-      await buscarOSM(
-        bounds.getSouth(), bounds.getWest(),
-        bounds.getNorth(), bounds.getEast()
-      )
-    })
-
-    map.once(L.Draw.Event.DRAWSTOP, () => {
-      try { map.removeControl(drawControl) } catch {}
-      setEtapa('instrucao')
-    })
-  }, [L, map, buscarOSM])
-
-
-
-  function toggleSelecionado(id: number) {
-    setSelecionados((prev) => {
-      const next = new Set(prev)
-      if (next.has(id)) next.delete(id)
-      else next.add(id)
-      // Atualizar cor no mapa
-      const idx = waysSugeridos.findIndex((w) => w.id === id)
-      const layer = previewLayersRef.current[idx]
-      if (layer) {
-        const sel = next.has(id)
-        layer.setStyle({
-          color: sel ? '#3BAD68' : '#CCCCCC',
-          fillColor: sel ? '#B8EAC8' : '#EEEEEE',
-        })
-      }
-      return next
-    })
+  function marcarTodas(marcar: boolean) {
+    setSelecionadas(marcar ? new Set(quadras.map((_, i) => i)) : new Set())
+    previewRef.current.forEach((camada) => camada.setStyle(estiloDaPrevia(marcar)))
   }
 
-  function selecionarTodos() {
-    const todos = new Set(waysSugeridos.map((w) => w.id))
-    setSelecionados(todos)
-    previewLayersRef.current.forEach((l) => l.setStyle({ color: '#3BAD68', fillColor: '#B8EAC8' }))
+  function focar(indice: number) {
+    const camada = previewRef.current[indice]
+    if (camada) map.fitBounds(camada.getBounds(), { maxZoom: 18, padding: [40, 40] })
   }
 
-  function deselecionarTodos() {
-    setSelecionados(new Set())
-    previewLayersRef.current.forEach((l) => l.setStyle({ color: '#CCCCCC', fillColor: '#EEEEEE' }))
-  }
+  // ── Gravar ─────────────────────────────────────────────────────────────────
+  async function gravar() {
+    if (!territorio || selecionadas.size === 0) return
+    setEtapa('gravando')
 
-  // ── Importar quadras selecionadas ──────────────────────────────────────────
-  async function importar() {
-    if (!territorioId) return
-    if (selecionados.size === 0) return
-
-    setEtapa('importando')
-    const paraImportar = waysSugeridos.filter((w) => selecionados.has(w.id))
-    for (let i = 0; i < paraImportar.length; i++) {
-      const way = paraImportar[i]
-      setProgresso(Math.round(((i + 1) / paraImportar.length) * 100))
-
-      // Converter geometry OSM para GeoJSON
-      const coordinates = [
-        way.geometry.map((g) => [g.lon, g.lat] as [number, number])
-      ]
-
-      // Garantir que o polígono é fechado
-      const firstCoord = coordinates[0][0]
-      const lastCoord = coordinates[0][coordinates[0].length - 1]
-      if (firstCoord[0] !== lastCoord[0] || firstCoord[1] !== lastCoord[1]) {
-        coordinates[0].push(firstCoord)
-      }
-
-      const geojson = {
-        type: 'Feature',
-        geometry: { type: 'Polygon', coordinates },
-        properties: { osm_id: way.id, ...way.tags },
-      }
-
-      const lados = gerarLadosFromCoords(coordinates[0])
-
-      const nomeCustom = way.nome.startsWith('Quadra ')
-        ? `${prefixoNome} ${way.nome.replace('Quadra ', '')}`
-        : way.nome
-
-      await supabase.from('quadras').insert({
-        nome: nomeCustom,
+    const linhas = quadras
+      .map((quadra, i) => ({ quadra, nome: nomes.get(i) }))
+      .filter((item): item is { quadra: QuadraGerada; nome: string } => !!item.nome)
+      .map(({ quadra, nome }) => ({
+        territorio_id: territorio.id,
+        nome,
         status: 'nao_iniciado',
-        geojson,
-        lados,
-        territorio_id: territorioId,
-      })
+        geojson: featureDaQuadra(quadra),
+        lados: gerarLados(quadra.anel),
+      }))
 
-      // ignorar erros individuais
+    const { error } = await supabase.from('quadras').insert(linhas)
+    if (error) {
+      setErroMsg(`Não foi possível gravar as quadras: ${error.message}`)
+      setEtapa('erro')
+      return
     }
-
-    // Limpar preview
-    previewLayersRef.current.forEach((l) => { try { map.removeLayer(l) } catch {} })
-    if (retanguloLayerRef.current) { try { map.removeLayer(retanguloLayerRef.current) } catch {} }
-
+    limparPreview()
     onConcluir()
     onFechar()
   }
 
   // ── Render ─────────────────────────────────────────────────────────────────
-  const selecionadosCount = selecionados.size
+  const total = quadras.length
+  const marcadas = selecionadas.size
 
   return (
     <div style={{
       position: 'absolute', top: 0, right: 0, bottom: 0,
-      width: '100%', maxWidth: 360,
+      width: '100%', maxWidth: 380,
       background: '#FFFFFF',
       borderLeft: '0.5px solid #EEEEEE',
       boxShadow: '-4px 0 20px rgba(0,0,0,0.1)',
@@ -258,183 +213,162 @@ export default function ImportarOSM({ mapInstance: map, territorios, onConcluir,
       display: 'flex', flexDirection: 'column',
       overflow: 'hidden',
     }}>
-      {/* Header */}
       <div style={{ padding: '16px 20px', borderBottom: '0.5px solid #EEEEEE', display: 'flex', alignItems: 'center', gap: 10 }}>
         <div style={{ flex: 1 }}>
-          <h2 style={{ fontSize: 16, fontWeight: 700, color: '#1A1A1A', margin: 0 }}>Importar do OpenStreetMap</h2>
+          <h2 style={{ fontSize: 16, fontWeight: 700, color: '#1A1A1A', margin: 0 }}>Gerar quadras pelas ruas</h2>
           <p style={{ fontSize: 12, color: '#888', margin: '2px 0 0' }}>
-            {etapa === 'instrucao' && 'Desenhe uma área no mapa'}
-            {etapa === 'selecionando' && '🖱️ Desenhe o retângulo no mapa'}
-            {etapa === 'carregando' && '⏳ Consultando OpenStreetMap…'}
-            {etapa === 'revisao' && `${waysSugeridos.length} quadras encontradas`}
-            {etapa === 'importando' && `Importando… ${progresso}%`}
-            {etapa === 'erro' && '⚠️ Erro'}
+            {etapa === 'selecao' && 'Escolha o território'}
+            {etapa === 'buscando' && '⏳ Consultando o OpenStreetMap…'}
+            {etapa === 'revisao' && `${total} quadra(s) encontradas`}
+            {etapa === 'gravando' && 'Gravando…'}
+            {etapa === 'erro' && '⚠️ Deu problema'}
           </p>
         </div>
         <button onClick={onFechar} style={{ background: '#F7F7F7', border: 'none', borderRadius: 8, padding: '6px 10px', fontSize: 16, cursor: 'pointer', color: '#666' }}>✕</button>
       </div>
 
-      {/* Conteúdo */}
       <div style={{ flex: 1, overflowY: 'auto', padding: '16px 20px' }}>
-
-        {etapa === 'instrucao' && (
+        {etapa === 'selecao' && (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
             <div style={{ background: '#F0F9FF', border: '1px solid #B3D9FF', borderRadius: 10, padding: '12px 14px', fontSize: 14, color: '#042C53', lineHeight: 1.6 }}>
               <strong>Como funciona:</strong><br />
-              1. Clique em &ldquo;Selecionar área&rdquo;<br />
-              2. Desenhe um retângulo sobre a região<br />
-              3. O sistema busca as quadras do OpenStreetMap<br />
-              4. Você escolhe quais importar
+              1. Escolha um território que já tenha contorno<br />
+              2. O sistema busca as ruas do OpenStreetMap<br />
+              3. Cada área cercada por ruas vira uma quadra<br />
+              4. Você confere no mapa e confirma
             </div>
 
             <div>
               <label style={{ display: 'block', fontSize: 13, fontWeight: 500, color: '#444', marginBottom: 6 }}>
-                Prefixo dos nomes
+                Território
               </label>
-              <input
-                value={prefixoNome}
-                onChange={(e) => setPrefixoNome(e.target.value)}
-                placeholder="Quadra"
-                style={{ width: '100%', padding: '11px 14px', fontSize: 14, border: '1px solid #DDD', borderRadius: 8, background: '#FAFAFA', outline: 'none', boxSizing: 'border-box' }}
-              />
-              <p style={{ fontSize: 12, color: '#AAAAAA', marginTop: 4 }}>Ex: &ldquo;Quadra&rdquo; → &ldquo;Quadra 1&rdquo;, &ldquo;Quadra 2&rdquo;…</p>
+              {comContorno.length === 0 ? (
+                <p style={{ color: '#E05050', fontSize: 13, lineHeight: 1.5 }}>
+                  Nenhum território tem contorno. Importe o GeoJSON dos territórios na tela &ldquo;Territórios&rdquo; antes de gerar as quadras.
+                </p>
+              ) : (
+                <select value={territorioId} onChange={(e) => setTerritorioId(e.target.value)}
+                  style={{ width: '100%', padding: '11px 14px', fontSize: 14, border: '1px solid #DDD', borderRadius: 8, background: '#FAFAFA', outline: 'none' }}>
+                  <option value="">— Selecione —</option>
+                  {comContorno.map((t) => (
+                    <option key={t.id} value={t.id}>#{t.numero} — {t.nome}</option>
+                  ))}
+                </select>
+              )}
+              {semContorno > 0 && comContorno.length > 0 && (
+                <p style={{ fontSize: 12, color: '#AAAAAA', marginTop: 6 }}>
+                  {semContorno} território(s) ficaram de fora por não ter contorno desenhado.
+                </p>
+              )}
             </div>
 
-            <button onClick={ativarRetangulo} style={{
+            <button onClick={() => void gerar()} disabled={!territorio} style={{
               padding: '14px', fontSize: 15, fontWeight: 600,
-              background: '#378ADD', color: '#fff',
-              border: 'none', borderRadius: 10, cursor: 'pointer',
+              background: territorio ? '#378ADD' : '#CCCCCC', color: '#fff',
+              border: 'none', borderRadius: 10, cursor: territorio ? 'pointer' : 'not-allowed',
             }}>
-              🔲 Selecionar área no mapa
+              🌐 Buscar ruas e gerar quadras
             </button>
           </div>
         )}
 
-        {etapa === 'selecionando' && (
+        {etapa === 'buscando' && (
           <div style={{ textAlign: 'center', padding: '2rem 0', color: '#666' }}>
-            <div style={{ fontSize: 40, marginBottom: 12 }}>🖱️</div>
-            <p style={{ fontSize: 15 }}>Clique e arraste no mapa para selecionar a área de importação.</p>
+            <div style={{ fontSize: 40, marginBottom: 12 }}>🌐</div>
+            <p style={{ fontSize: 15 }}>Consultando o OpenStreetMap…</p>
+            <p style={{ fontSize: 13, color: '#AAAAAA', marginTop: 8 }}>Costuma levar alguns segundos.</p>
           </div>
         )}
 
-        {etapa === 'carregando' && (
+        {etapa === 'gravando' && (
           <div style={{ textAlign: 'center', padding: '2rem 0', color: '#666' }}>
-            <div style={{ fontSize: 40, marginBottom: 12 }}>🌐</div>
-            <p style={{ fontSize: 15 }}>Consultando OpenStreetMap…</p>
-            <p style={{ fontSize: 13, color: '#AAAAAA', marginTop: 8 }}>Isso pode levar alguns segundos.</p>
+            <div style={{ fontSize: 40, marginBottom: 12 }}>💾</div>
+            <p style={{ fontSize: 15 }}>Gravando {marcadas} quadra(s)…</p>
           </div>
         )}
 
         {etapa === 'erro' && (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
-            <div style={{ background: '#FFF0F0', border: '1px solid #E05050', borderRadius: 10, padding: '12px 14px', fontSize: 14, color: '#501313' }}>
+            <div style={{ background: '#FFF0F0', border: '1px solid #E05050', borderRadius: 10, padding: '12px 14px', fontSize: 14, color: '#501313', lineHeight: 1.5 }}>
               {erroMsg}
             </div>
-            <button onClick={() => setEtapa('instrucao')} style={{
+            <button onClick={() => setEtapa(quadras.length > 0 ? 'revisao' : 'selecao')} style={{
               padding: '13px', fontSize: 14, fontWeight: 600,
               background: '#F7F7F7', color: '#555',
               border: '0.5px solid #DDD', borderRadius: 10, cursor: 'pointer',
             }}>
-              ← Tentar novamente
+              ← Voltar
             </button>
           </div>
         )}
 
         {etapa === 'revisao' && (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
-            {/* Território */}
-            <div>
-              <label style={{ display: 'block', fontSize: 13, fontWeight: 500, color: '#444', marginBottom: 6 }}>
-                Território de destino *
-              </label>
-              {territorios.length === 0 ? (
-                <p style={{ color: '#E05050', fontSize: 13 }}>Crie um território primeiro.</p>
-              ) : (
-                <select value={territorioId} onChange={(e) => setTerritorioId(e.target.value)}
-                  style={{ width: '100%', padding: '11px 14px', fontSize: 14, border: '1px solid #DDD', borderRadius: 8, background: '#FAFAFA', outline: 'none' }}>
-                  <option value="">— Selecione —</option>
-                  {territorios.map((t) => (
-                    <option key={t.id} value={t.id}>#{t.numero} — {t.nome}</option>
-                  ))}
-                </select>
-              )}
-            </div>
+            {quadrasExistentes.length > 0 && (
+              <div style={{ background: '#FFF8E7', border: '1px solid #F0C060', borderRadius: 10, padding: '10px 12px', fontSize: 13, color: '#412402', lineHeight: 1.5 }}>
+                Este território já tem {quadrasExistentes.length} quadra(s). As novas entram numerando a partir daí, sem apagar nada.
+              </div>
+            )}
 
-            {/* Controles de seleção */}
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-              <span style={{ fontSize: 13, color: '#666' }}>
-                {selecionadosCount} de {waysSugeridos.length} selecionadas
-              </span>
+              <span style={{ fontSize: 13, color: '#666' }}>{marcadas} de {total} marcadas</span>
               <div style={{ display: 'flex', gap: 6 }}>
-                <button onClick={selecionarTodos} style={{ fontSize: 12, padding: '4px 10px', background: '#F7F7F7', border: '0.5px solid #DDD', borderRadius: 6, cursor: 'pointer', color: '#444' }}>
-                  Todas
-                </button>
-                <button onClick={deselecionarTodos} style={{ fontSize: 12, padding: '4px 10px', background: '#F7F7F7', border: '0.5px solid #DDD', borderRadius: 6, cursor: 'pointer', color: '#444' }}>
-                  Nenhuma
-                </button>
+                <button onClick={() => marcarTodas(true)} style={{ fontSize: 12, padding: '4px 10px', background: '#F7F7F7', border: '0.5px solid #DDD', borderRadius: 6, cursor: 'pointer', color: '#444' }}>Todas</button>
+                <button onClick={() => marcarTodas(false)} style={{ fontSize: 12, padding: '4px 10px', background: '#F7F7F7', border: '0.5px solid #DDD', borderRadius: 6, cursor: 'pointer', color: '#444' }}>Nenhuma</button>
               </div>
             </div>
 
-            {/* Lista */}
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 6, maxHeight: 320, overflowY: 'auto' }}>
-              {waysSugeridos.map((way) => {
-                const sel = selecionados.has(way.id)
-                const tipoTag = way.tags?.landuse ?? way.tags?.building ?? way.tags?.amenity ?? ''
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+              {quadras.map((quadra, i) => {
+                const marcada = selecionadas.has(i)
                 return (
-                  <button
-                    key={way.id}
-                    onClick={() => toggleSelecionado(way.id)}
-                    style={{
-                      display: 'flex', alignItems: 'center', gap: 10,
-                      padding: '10px 12px', borderRadius: 10, textAlign: 'left',
-                      border: sel ? '1.5px solid #3BAD68' : '1px solid #EEEEEE',
-                      background: sel ? '#EAF7EF' : '#FFFFFF',
-                      cursor: 'pointer',
-                    }}
-                  >
-                    <span style={{ fontSize: 16, flexShrink: 0 }}>{sel ? '✅' : '⬜'}</span>
-                    <div style={{ flex: 1, minWidth: 0 }}>
-                      <div style={{ fontSize: 13, fontWeight: 600, color: '#1A1A1A', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                        {way.nome}
-                      </div>
-                      {tipoTag && <div style={{ fontSize: 11, color: '#888' }}>{tipoTag}</div>}
-                    </div>
-                    <span style={{ fontSize: 11, color: '#AAAAAA', flexShrink: 0 }}>
-                      {way.geometry.length - 1} lados
-                    </span>
-                  </button>
+                  <div key={i} style={{
+                    display: 'flex', alignItems: 'center', gap: 8,
+                    padding: '8px 10px', borderRadius: 10,
+                    border: marcada ? '1.5px solid #3BAD68' : '1px solid #EEEEEE',
+                    background: marcada ? '#EAF7EF' : '#FFFFFF',
+                  }}>
+                    <button onClick={() => alternar(i)} style={{ display: 'flex', alignItems: 'center', gap: 10, flex: 1, minWidth: 0, background: 'none', border: 'none', padding: 0, textAlign: 'left', cursor: 'pointer' }}>
+                      <span style={{ fontSize: 16, flexShrink: 0 }}>{marcada ? '✅' : '⬜'}</span>
+                      <span style={{ flex: 1, minWidth: 0 }}>
+                        <span style={{ display: 'block', fontSize: 13, fontWeight: 600, color: marcada ? '#1A1A1A' : '#999' }}>
+                          {nomes.get(i) ?? 'não será gravada'}
+                        </span>
+                        <span style={{ display: 'block', fontSize: 11, color: '#888', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                          {quadra.areaM2.toLocaleString('pt-BR')} m² · {quadra.anel.length - 1} lados
+                          {quadra.ruas.length > 0 ? ` · ${quadra.ruas.join(', ')}` : ''}
+                        </span>
+                      </span>
+                    </button>
+                    <button onClick={() => focar(i)} title="Ver no mapa" style={{ background: '#F7F7F7', border: '0.5px solid #DDD', borderRadius: 6, padding: '4px 8px', fontSize: 13, cursor: 'pointer' }}>🔍</button>
+                  </div>
                 )
               })}
             </div>
-          </div>
-        )}
 
-        {etapa === 'importando' && (
-          <div style={{ textAlign: 'center', padding: '2rem 0', color: '#666' }}>
-            <div style={{ fontSize: 40, marginBottom: 16 }}>⏳</div>
-            <p style={{ fontSize: 15, marginBottom: 12 }}>Importando {selecionadosCount} quadras…</p>
-            <div style={{ height: 8, background: '#EEEEEE', borderRadius: 4, overflow: 'hidden' }}>
-              <div style={{ height: '100%', width: `${progresso}%`, background: '#3BAD68', borderRadius: 4, transition: 'width 0.3s' }} />
-            </div>
-            <p style={{ fontSize: 13, color: '#AAAAAA', marginTop: 8 }}>{progresso}%</p>
+            {descartadas > 0 && (
+              <p style={{ fontSize: 12, color: '#AAAAAA' }}>
+                {descartadas} área(s) foram ignoradas por ficarem fora do contorno ou por terem tamanho fora do que se espera de uma quadra.
+              </p>
+            )}
           </div>
         )}
       </div>
 
-      {/* Footer — botão importar */}
       {etapa === 'revisao' && (
-        <div style={{ padding: '14px 20px', borderTop: '0.5px solid #EEEEEE' }}>
-          <button
-            onClick={() => void importar()}
-            disabled={selecionadosCount === 0 || !territorioId}
+        <div style={{ padding: '14px 20px', borderTop: '0.5px solid #EEEEEE', display: 'flex', gap: 10 }}>
+          <button onClick={() => { limparPreview(); setQuadras([]); setSelecionadas(new Set()); setEtapa('selecao') }}
+            style={{ padding: '14px 16px', fontSize: 14, fontWeight: 500, background: '#F7F7F7', color: '#555', border: '0.5px solid #DDD', borderRadius: 10, cursor: 'pointer' }}>
+            ←
+          </button>
+          <button onClick={() => void gravar()} disabled={marcadas === 0}
             style={{
-              width: '100%', padding: '14px', fontSize: 15, fontWeight: 600,
-              background: selecionadosCount === 0 || !territorioId ? '#CCCCCC' : '#3BAD68',
+              flex: 1, padding: '14px', fontSize: 15, fontWeight: 600,
+              background: marcadas === 0 ? '#CCCCCC' : VERDE,
               color: '#FFFFFF', border: 'none', borderRadius: 10,
-              cursor: selecionadosCount === 0 || !territorioId ? 'not-allowed' : 'pointer',
-            }}
-          >
-            ✅ Importar {selecionadosCount} quadra{selecionadosCount !== 1 ? 's' : ''}
+              cursor: marcadas === 0 ? 'not-allowed' : 'pointer',
+            }}>
+            ✅ Gravar {marcadas} quadra{marcadas !== 1 ? 's' : ''}
           </button>
         </div>
       )}

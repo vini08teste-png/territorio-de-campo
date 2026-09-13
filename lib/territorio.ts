@@ -112,6 +112,19 @@ function anelPrincipal(geometria: Geometria): Anel | null {
   return maior
 }
 
+/**
+ * Polígonos do contorno, cada um com o anel externo primeiro e os buracos
+ * depois. Um Polygon vira uma lista de um item; MultiPolygon, uma por parte.
+ */
+export function poligonosDoContorno(geojson: unknown): Anel[][] {
+  const geometria = extrairGeometria(geojson)
+  if (!geometria) return []
+  const poligonos = geometria.type === 'Polygon' ? [geometria.coordinates] : geometria.coordinates
+  return poligonos
+    .map((poligono) => poligono.filter((anel) => anel.length >= 4))
+    .filter((poligono) => poligono.length > 0)
+}
+
 /** Centroide do contorno do território, em [lat, lng]. */
 export function centroDoContorno(geojson: unknown): [number, number] | null {
   const geometria = extrairGeometria(geojson)
