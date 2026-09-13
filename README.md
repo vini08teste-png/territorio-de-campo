@@ -50,8 +50,6 @@ lib/
   prazoTerritorio.ts            → cálculo de prazo/atraso de território
 
 BANCO_DE_DADOS.sql        → schema completo do banco (Supabase/Postgres)
-SQL_CORRIGIR_ADMIN.sql     → script para corrigir/promover admin
-SQL_PRAZO_TERRITORIO.sql    → script relacionado a prazos de território
 vercel.json                  → config de deploy na Vercel
 ```
 
