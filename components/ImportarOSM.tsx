@@ -7,7 +7,7 @@ import { supabase } from '@/lib/supabase'
 interface Territorio {
   id: string
   nome: string
-  numero: number
+  numero: string
 }
 
 interface OsmWay {

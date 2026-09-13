@@ -5,10 +5,59 @@ import { supabase, CORES_STATUS, type Territorio, type Quadra } from '@/lib/supa
 import { usePaginaRestrita } from '@/lib/permissoes'
 import { Carregando, SemPermissao } from '@/components/EstadoPagina'
 import { calcularPrazoTerritorio, formatarPrazo } from '@/lib/prazoTerritorio'
+import {
+  formatarNumeroTerritorio, inteiroOuNulo, lerTerritoriosDoGeoJSON, linkComoChegar,
+  resumoPublicadoresFamilias, textoOuNulo, type TerritorioImportado,
+} from '@/lib/territorio'
 
 interface DesignacaoSG {
   territorio_id: string
   data_inicio: string
+}
+
+const FORM_VAZIO = { nome: '', numero: '', bairro: '', publicadores: '', familias: '', link_maps: '' }
+type FormTerritorio = typeof FORM_VAZIO
+type CampoExtra = 'publicadores' | 'familias' | 'link_maps'
+
+function camposDoFormulario(form: FormTerritorio) {
+  return {
+    nome: form.nome,
+    numero: form.numero,
+    bairro: form.bairro,
+    publicadores: inteiroOuNulo(form.publicadores),
+    familias: inteiroOuNulo(form.familias),
+    link_maps: textoOuNulo(form.link_maps),
+  }
+}
+
+function valorDoCampo(valor: number | string | null | undefined): string {
+  if (valor === null || valor === undefined) return ''
+  return String(valor)
+}
+
+function formularioDoTerritorio(t: Territorio): FormTerritorio {
+  return {
+    nome: t.nome,
+    numero: t.numero,
+    bairro: valorDoCampo(t.bairro),
+    publicadores: valorDoCampo(t.publicadores),
+    familias: valorDoCampo(t.familias),
+    link_maps: valorDoCampo(t.link_maps),
+  }
+}
+
+// Só sobrescreve o que veio preenchido no arquivo
+function camposDaImportacao(item: TerritorioImportado) {
+  const campos: Record<string, unknown> = { geojson: item.geojson }
+  if (item.publicadores !== null) campos.publicadores = item.publicadores
+  if (item.familias !== null) campos.familias = item.familias
+  if (item.link_maps !== null) campos.link_maps = item.link_maps
+  return campos
+}
+
+function mensagemDeErro(erro: unknown): string {
+  if (erro instanceof Error) return erro.message
+  return 'Arquivo inválido.'
 }
 
 export default function TerritoriosPage() {
@@ -18,9 +67,10 @@ export default function TerritoriosPage() {
   const [designacoesSG, setDesignacoesSG] = useState<DesignacaoSG[]>([])
   const [prazoDias, setPrazoDias] = useState(120)
   const [criando, setCriando] = useState(false)
-  const [form, setForm] = useState({ nome: '', numero: '', bairro: '' })
+  const [form, setForm] = useState<FormTerritorio>(FORM_VAZIO)
   const [editandoTerr, setEditandoTerr] = useState<Territorio | null>(null)
-  const [formEdit, setFormEdit] = useState({ nome: '', numero: '', bairro: '' })
+  const [formEdit, setFormEdit] = useState<FormTerritorio>(FORM_VAZIO)
+  const [importando, setImportando] = useState(false)
   const [editandoQuadra, setEditandoQuadra] = useState<Quadra | null>(null)
   const [formQuadra, setFormQuadra] = useState({ nome: '', territorio_id: '' })
   const [expandido, setExpandido] = useState<string | null>(null)
@@ -51,13 +101,13 @@ export default function TerritoriosPage() {
     setSalvando(true)
     const { data: { user } } = await supabase.auth.getUser()
     const { data, error } = await supabase.from('territorios')
-      .insert({ ...form, status: 'nao_iniciado', criado_por: user?.id })
+      .insert({ ...camposDoFormulario(form), status: 'nao_iniciado', criado_por: user?.id })
       .select().single()
     setSalvando(false)
     if (error) { mostrarErro('Erro ao criar território.'); return }
     if (data) setTerritorios((prev) => [...prev, data as Territorio].sort((a, b) => Number(a.numero) - Number(b.numero)))
     setCriando(false)
-    setForm({ nome: '', numero: '', bairro: '' })
+    setForm(FORM_VAZIO)
     mostrarSucesso('Território criado!')
   }
 
@@ -65,10 +115,14 @@ export default function TerritoriosPage() {
     e.preventDefault()
     if (!editandoTerr) return
     setSalvando(true)
-    const { error } = await supabase.from('territorios').update(formEdit).eq('id', editandoTerr.id)
+    const campos = camposDoFormulario(formEdit)
+    const { error } = await supabase.from('territorios').update(campos).eq('id', editandoTerr.id)
     setSalvando(false)
     if (error) { mostrarErro('Erro ao salvar.'); return }
-    setTerritorios((prev) => prev.map((t) => t.id === editandoTerr.id ? { ...t, ...formEdit } : t))
+    setTerritorios((prev) => prev.map((t) => {
+      if (t.id !== editandoTerr.id) return t
+      return { ...t, ...campos }
+    }))
     setEditandoTerr(null)
     mostrarSucesso('Território atualizado!')
   }
@@ -87,6 +141,68 @@ export default function TerritoriosPage() {
     if (error) { mostrarErro('Erro ao excluir.'); return }
     setTerritorios((prev) => prev.filter((x) => x.id !== t.id))
     mostrarSucesso(`"${t.nome}" excluído.`)
+  }
+
+  // Importa o territorios.geojson do editor: associa pelo número, atualiza o
+  // contorno (e publicadores/famílias/link, se vierem) e cria os que faltam.
+  async function importarContornos(e: React.ChangeEvent<HTMLInputElement>) {
+    const arquivo = e.target.files?.[0]
+    e.target.value = ''
+    if (!arquivo) return
+
+    let lidos: TerritorioImportado[] = []
+    let ignorados = 0
+    try {
+      const resultado = lerTerritoriosDoGeoJSON(JSON.parse(await arquivo.text()))
+      lidos = resultado.territorios
+      ignorados = resultado.ignorados
+    } catch (erroLeitura) {
+      mostrarErro(mensagemDeErro(erroLeitura))
+      return
+    }
+
+    setImportando(true)
+    const { data: { user } } = await supabase.auth.getUser()
+    const lista = [...territorios]
+    let atualizados = 0
+    let criados = 0
+    let falhas = 0
+
+    for (const item of lidos) {
+      const indice = lista.findIndex((t) => Number(t.numero) === item.numero)
+      if (indice >= 0) {
+        const { data, error } = await supabase.from('territorios')
+          .update(camposDaImportacao(item)).eq('id', lista[indice].id).select().single()
+        if (error || !data) { falhas++; continue }
+        lista[indice] = data as Territorio
+        atualizados++
+        continue
+      }
+
+      const numero = formatarNumeroTerritorio(item.numero)
+      const { data, error } = await supabase.from('territorios').insert({
+        ...camposDaImportacao(item),
+        nome: item.localidade || `Território ${numero}`,
+        numero,
+        bairro: item.localidade,
+        status: 'nao_iniciado',
+        criado_por: user?.id,
+      }).select().single()
+      if (error || !data) { falhas++; continue }
+      lista.push(data as Territorio)
+      criados++
+    }
+
+    setTerritorios(lista.sort((a, b) => Number(a.numero) - Number(b.numero)))
+    setImportando(false)
+
+    const partes = [`${atualizados} atualizado(s)`, `${criados} criado(s)`]
+    if (ignorados > 0) partes.push(`${ignorados} sem número ou contorno ignorado(s)`)
+    if (falhas > 0) {
+      mostrarErro(`Importação com falhas: ${falhas} território(s) não salvos. ${partes.join(', ')}.`)
+      return
+    }
+    mostrarSucesso(`Contornos importados: ${partes.join(', ')}.`)
   }
 
   // ── Quadra ───────────────────────────────────────────────────────────────────
@@ -129,11 +245,24 @@ export default function TerritoriosPage() {
   if (verificandoAcesso) return <Carregando />
   if (!autorizado) return <SemPermissao />
 
+  let textoImportar = '📥 Importar contornos'
+  if (importando) textoImportar = 'Importando…'
+
   return (
     <div style={{ padding: '1.5rem 1rem 4rem', maxWidth: 800, margin: '0 auto' }}>
 
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 24 }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginBottom: 24 }}>
         <h1 style={{ fontSize: 24, fontWeight: 700, color: '#1A1A1A', margin: 0 }}>Territórios</h1>
+        <div style={{ display: 'flex', gap: 8 }}>
+        <label title="Arquivo territorios.geojson gerado pelo editor de territórios" style={{
+          padding: '10px 14px', fontSize: 14, fontWeight: 600,
+          background: '#F7F7F7', color: '#1A1A1A',
+          border: '0.5px solid #DDD', borderRadius: 10, cursor: 'pointer',
+        }}>
+          {textoImportar}
+          <input type="file" accept=".geojson,.json,application/geo+json,application/json" hidden
+            disabled={importando} onChange={(e) => void importarContornos(e)} />
+        </label>
         <button onClick={() => setCriando(!criando)} style={{
           padding: '10px 18px', fontSize: 14, fontWeight: 600,
           background: criando ? '#F7F7F7' : '#3BAD68', color: criando ? '#555' : '#fff',
@@ -141,6 +270,7 @@ export default function TerritoriosPage() {
         }}>
           {criando ? '✕ Cancelar' : '+ Novo território'}
         </button>
+        </div>
       </div>
 
       {sucesso && <div style={{ background: '#EAF7EF', border: '1px solid #60C898', borderRadius: 10, padding: '10px 14px', marginBottom: 16, color: '#04342C', fontSize: 14 }}>✅ {sucesso}</div>}
@@ -168,6 +298,7 @@ export default function TerritoriosPage() {
               <input value={form.bairro} onChange={(e) => setForm((p) => ({ ...p, bairro: e.target.value }))} required placeholder="Ex: Bom Jardim"
                 style={{ width: '100%', padding: '11px 14px', fontSize: 15, border: '1px solid #DDD', borderRadius: 8, background: '#FAFAFA', outline: 'none', boxSizing: 'border-box' }} />
             </div>
+            <CamposExtras valores={form} alterar={(campo, valor) => setForm((p) => ({ ...p, [campo]: valor }))} />
             <button type="submit" disabled={salvando} style={{
               padding: '13px', fontSize: 15, fontWeight: 600,
               background: salvando ? '#CCC' : '#3BAD68', color: '#fff',
@@ -188,6 +319,8 @@ export default function TerritoriosPage() {
           const aberto = expandido === t.id
           const designacao = designacoesSG.find((d) => d.territorio_id === t.id)
           const prazo = designacao ? calcularPrazoTerritorio(designacao.data_inicio, prazoDias) : null
+          const rota = linkComoChegar(t)
+          const resumo = resumoPublicadoresFamilias(t)
 
           return (
             <div key={t.id} style={{ background: '#FFFFFF', border: '0.5px solid #EEEEEE', borderRadius: 12, overflow: 'hidden' }}>
@@ -197,6 +330,10 @@ export default function TerritoriosPage() {
                   <div style={{ flex: 1 }}>
                     <div style={{ fontSize: 16, fontWeight: 700, color: '#1A1A1A' }}>#{t.numero} — {t.nome}</div>
                     <div style={{ fontSize: 13, color: '#888', marginTop: 2 }}>{t.bairro}</div>
+                    {resumo && <div style={{ fontSize: 13, color: '#555', marginTop: 2 }}>{resumo}</div>}
+                    {!t.geojson && (
+                      <div style={{ fontSize: 12, color: '#B07A00', marginTop: 2 }}>Sem contorno no mapa</div>
+                    )}
                   </div>
                   <div style={{ fontSize: 20, fontWeight: 800, color: corPct, marginLeft: 12 }}>{pct}%</div>
                 </div>
@@ -233,7 +370,14 @@ export default function TerritoriosPage() {
                   }}>
                     {aberto ? '▲ Fechar quadras' : `▼ Ver quadras (${qs.length})`}
                   </button>
-                  <button onClick={() => { setEditandoTerr(t); setFormEdit({ nome: t.nome, numero: t.numero, bairro: t.bairro }) }} style={{
+                  {rota && (
+                    <a href={rota} target="_blank" rel="noreferrer" title="Abrir a rota no Google Maps" style={{
+                      padding: '8px 14px', fontSize: 13, fontWeight: 600,
+                      background: '#E8F4FB', color: '#042C53', textDecoration: 'none',
+                      border: '0.5px solid #70B8E0', borderRadius: 8,
+                    }}>🧭 Como chegar</a>
+                  )}
+                  <button onClick={() => { setEditandoTerr(t); setFormEdit(formularioDoTerritorio(t)) }} style={{
                     padding: '8px 14px', fontSize: 13, fontWeight: 500,
                     background: '#F7F7F7', color: '#1A1A1A',
                     border: '0.5px solid #DDD', borderRadius: 8, cursor: 'pointer',
@@ -310,6 +454,7 @@ export default function TerritoriosPage() {
                 <input value={formEdit.bairro} onChange={(e) => setFormEdit((p) => ({ ...p, bairro: e.target.value }))} required
                   style={{ width: '100%', padding: '11px 14px', fontSize: 15, border: '1px solid #DDD', borderRadius: 8, background: '#FAFAFA', outline: 'none', boxSizing: 'border-box' }} />
               </div>
+              <CamposExtras valores={formEdit} alterar={(campo, valor) => setFormEdit((p) => ({ ...p, [campo]: valor }))} />
               <div style={{ display: 'flex', gap: 10, marginTop: 8 }}>
                 <button type="button" onClick={() => setEditandoTerr(null)} style={{ flex: 1, padding: '13px', fontSize: 15, fontWeight: 500, background: '#F7F7F7', color: '#555', border: '0.5px solid #DDD', borderRadius: 10, cursor: 'pointer' }}>Cancelar</button>
                 <button type="submit" disabled={salvando} style={{ flex: 1, padding: '13px', fontSize: 15, fontWeight: 600, background: salvando ? '#CCC' : '#3BAD68', color: '#fff', border: 'none', borderRadius: 10, cursor: salvando ? 'not-allowed' : 'pointer' }}>
@@ -354,5 +499,38 @@ export default function TerritoriosPage() {
         </div>
       )}
     </div>
+  )
+}
+
+// Publicadores, famílias e link do QR code (legenda do mapa geral e cartão S-12-T)
+function CamposExtras({ valores, alterar }: {
+  valores: FormTerritorio
+  alterar: (campo: CampoExtra, valor: string) => void
+}) {
+  const estiloRotulo = { display: 'block', fontSize: 13, fontWeight: 500, color: '#444', marginBottom: 6 }
+  const estiloCampo = {
+    width: '100%', padding: '11px 14px', fontSize: 15, border: '1px solid #DDD',
+    borderRadius: 8, background: '#FAFAFA', outline: 'none', boxSizing: 'border-box' as const,
+  }
+  return (
+    <>
+      <div style={{ display: 'flex', gap: 12 }}>
+        <div style={{ flex: 1 }}>
+          <label style={estiloRotulo}>Publicadores</label>
+          <input type="number" min={0} value={valores.publicadores}
+            onChange={(e) => alterar('publicadores', e.target.value)} style={estiloCampo} />
+        </div>
+        <div style={{ flex: 1 }}>
+          <label style={estiloRotulo}>Famílias</label>
+          <input type="number" min={0} value={valores.familias}
+            onChange={(e) => alterar('familias', e.target.value)} style={estiloCampo} />
+        </div>
+      </div>
+      <div>
+        <label style={estiloRotulo}>Link do Google Maps (QR code do cartão)</label>
+        <input type="url" value={valores.link_maps} placeholder="https://goo.gl/maps/…"
+          onChange={(e) => alterar('link_maps', e.target.value)} style={estiloCampo} />
+      </div>
+    </>
   )
 }
