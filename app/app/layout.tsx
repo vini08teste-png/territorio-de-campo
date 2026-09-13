@@ -130,6 +130,19 @@ function IconSair({ size = 22, color = 'currentColor' }) {
   )
 }
 
+function IconHierarquia({ size = 22, color = 'currentColor' }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round">
+      <circle cx="12" cy="4.5" r="2.2" />
+      <circle cx="5" cy="12" r="2.2" />
+      <circle cx="19" cy="12" r="2.2" />
+      <circle cx="5" cy="19.5" r="2.2" />
+      <circle cx="19" cy="19.5" r="2.2" />
+      <path d="M12 6.7v3M5 14.2v3.1M19 14.2v3.1M9.2 10.5 7.3 9.8M14.8 10.5l1.9-.7" />
+    </svg>
+  )
+}
+
 // ─── Mapa de ícones por chave ─────────────────────────────────────────────────
 
 const ICONES: Record<string, (props: { size?: number; color?: string }) => React.ReactElement > = {
@@ -142,6 +155,7 @@ const ICONES: Record<string, (props: { size?: number; color?: string }) => React
   analise: IconAnalise,
   usuarios: IconUsuarios,
   novo_usuario: IconNovoUsuario,
+  hierarquia: IconHierarquia,
   logs: IconLogs,
   config: IconConfig,
   sair: IconSair,
@@ -166,9 +180,29 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
     supabase.auth.getSession().then(async ({ data: { session } }) => {
       if (!session) { router.push('/login'); return }
       const { data } = await supabase.from('usuarios').select('*').eq('id', session.user.id).single()
+      if (!data) { router.push('/login'); return }
+
+      if (!data.ativo) {
+        await logout()
+        router.push('/login?desativado=1')
+        return
+      }
+
+      const ROTAS_RESTRITAS: { prefixo: string; perfis: string[] }[] = [
+        { prefixo: '/app/usuarios', perfis: ['admin'] },
+        { prefixo: '/app/configuracoes', perfis: ['admin'] },
+        { prefixo: '/app/hierarquia', perfis: ['admin'] },
+        { prefixo: '/app/logs', perfis: ['admin', 'superintendente_territorio'] },
+      ]
+      const rotaRestrita = ROTAS_RESTRITAS.find((r) => pathname.startsWith(r.prefixo))
+      if (rotaRestrita && !rotaRestrita.perfis.includes(data.perfil)) {
+        router.push('/app')
+        return
+      }
+
       setUsuario(data)
     })
-  }, [router])
+  }, [router, pathname])
 
   async function handleLogout() {
     await logout()
@@ -189,7 +223,6 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
 
   // === MOBILE ===
   if (isMobile) {
-    const navMobile = navItems.slice(0, 4)
     return (
       <div style={{ display: 'flex', flexDirection: 'column', height: '100dvh', background: '#fff', overflow: 'hidden' }}>
 
@@ -221,7 +254,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
           {children}
         </main>
 
-        {/* Barra inferior */}
+        {/* Barra inferior — rolável quando o perfil tem mais itens do que cabe na tela */}
         <div style={{
           display: 'flex',
           borderTop: '1px solid #EEEEEE',
@@ -230,35 +263,39 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
           zIndex: 100,
           paddingBottom: 'env(safe-area-inset-bottom)',
         }}>
-          {navMobile.map(item => {
-            const ativo = pathname === item.href
-            const Icone = ICONES[item.iconeKey]
-            return (
-              <Link key={item.href} href={item.href} style={{
-                flex: 1,
-                display: 'flex', flexDirection: 'column',
-                alignItems: 'center', justifyContent: 'center',
-                padding: '10px 4px',
-                textDecoration: 'none',
-                color: ativo ? cores.acento : '#AAAAAA',
-                gap: 4,
-                borderTop: ativo ? `2px solid ${cores.acento}` : '2px solid transparent',
-                transition: 'color 0.15s',
-              }}>
-                {Icone && <Icone size={22} color={ativo ? cores.acento : '#AAAAAA'} />}
-                <span style={{ fontSize: 11, fontWeight: ativo ? 700 : 400, whiteSpace: 'nowrap', color: ativo ? cores.acento : '#AAAAAA' }}>
-                  {item.labelCurto || item.label}
-                </span>
-              </Link>
-            )
-          })}
-          {/* Botão sair */}
+          <div style={{ display: 'flex', overflowX: 'auto', flex: 1, minWidth: 0 }}>
+            {navItems.map(item => {
+              const ativo = pathname === item.href
+              const Icone = ICONES[item.iconeKey]
+              return (
+                <Link key={item.href} href={item.href} style={{
+                  flexShrink: 0,
+                  minWidth: 64,
+                  display: 'flex', flexDirection: 'column',
+                  alignItems: 'center', justifyContent: 'center',
+                  padding: '10px 8px',
+                  textDecoration: 'none',
+                  color: ativo ? cores.acento : '#AAAAAA',
+                  gap: 4,
+                  borderTop: ativo ? `2px solid ${cores.acento}` : '2px solid transparent',
+                  transition: 'color 0.15s',
+                }}>
+                  {Icone && <Icone size={22} color={ativo ? cores.acento : '#AAAAAA'} />}
+                  <span style={{ fontSize: 11, fontWeight: ativo ? 700 : 400, whiteSpace: 'nowrap', color: ativo ? cores.acento : '#AAAAAA' }}>
+                    {item.labelCurto || item.label}
+                  </span>
+                </Link>
+              )
+            })}
+          </div>
+          {/* Botão sair — fica fixo fora da rolagem, sempre acessível */}
           <button onClick={handleLogout} style={{
-            flex: 1,
+            flexShrink: 0,
+            minWidth: 64,
             display: 'flex', flexDirection: 'column',
             alignItems: 'center', justifyContent: 'center',
-            padding: '10px 4px', gap: 4,
-            border: 'none', background: 'none', cursor: 'pointer',
+            padding: '10px 8px', gap: 4,
+            border: 'none', borderLeft: '1px solid #EEEEEE', background: 'none', cursor: 'pointer',
             borderTop: '2px solid transparent',
           }}>
             <IconSair size={22} color="#AAAAAA" />
@@ -353,33 +390,44 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
 
 // ─── Nav items por perfil ──────────────────────────────────────────────────────
 
-function getNavItems(perfil: string) {
-  const todos = {
-    dirigente: [
-      { href: '/app', iconeKey: 'mapa', label: 'Meu mapa', labelCurto: 'Mapa' },
-      { href: '/app/historico', iconeKey: 'historico', label: 'Histórico', labelCurto: 'Histórico' },
-      { href: '/app/perfil', iconeKey: 'perfil', label: 'Meu perfil', labelCurto: 'Perfil' },
-    ],
-    superintendente_grupo: [
-      { href: '/app', iconeKey: 'mapa', label: 'Mapa', labelCurto: 'Mapa' },
-      { href: '/app/progresso', iconeKey: 'progresso', label: 'Progresso', labelCurto: 'Progresso' },
-      { href: '/app/validar', iconeKey: 'validar', label: 'Validar', labelCurto: 'Validar' },
-      { href: '/app/perfil', iconeKey: 'perfil', label: 'Perfil', labelCurto: 'Perfil' },
-    ],
-    superintendente_territorio: [
-      { href: '/app', iconeKey: 'mapa', label: 'Mapa geral', labelCurto: 'Mapa' },
-      { href: '/app/territorios', iconeKey: 'territorios', label: 'Territórios', labelCurto: 'Territórios' },
-      { href: '/app/validar', iconeKey: 'validar', label: 'Validar', labelCurto: 'Validar' },
-      { href: '/app/analise', iconeKey: 'analise', label: 'Análise', labelCurto: 'Análise' },
-      { href: '/app/perfil', iconeKey: 'perfil', label: 'Perfil', labelCurto: 'Perfil' },
-    ],
-    admin: [
-      { href: '/app/usuarios', iconeKey: 'usuarios', label: 'Usuários', labelCurto: 'Usuários' },
-      { href: '/app/usuarios/novo', iconeKey: 'novo_usuario', label: 'Novo usuário', labelCurto: 'Novo' },
-      { href: '/app/logs', iconeKey: 'logs', label: 'Logs', labelCurto: 'Logs' },
-      { href: '/app/configuracoes', iconeKey: 'config', label: 'Configurações', labelCurto: 'Config' },
-      { href: '/app/perfil', iconeKey: 'perfil', label: 'Perfil', labelCurto: 'Perfil' },
-    ],
+interface NavItem {
+  href: string
+  iconeKey: string
+  label: string
+  labelCurto: string
+}
+
+// Cada nível da hierarquia herda os itens de quem está abaixo — quem pode
+// fazer o que o dirigente faz também vê "Mapa", quem faz o que o SG faz
+// também vê "Progresso"/"Validar", e assim por diante.
+const ITEM_MAPA: NavItem = { href: '/app', iconeKey: 'mapa', label: 'Mapa', labelCurto: 'Mapa' }
+const ITEM_HISTORICO: NavItem = { href: '/app/historico', iconeKey: 'historico', label: 'Histórico', labelCurto: 'Histórico' }
+const ITEM_PROGRESSO: NavItem = { href: '/app/progresso', iconeKey: 'progresso', label: 'Progresso', labelCurto: 'Progresso' }
+const ITEM_VALIDAR: NavItem = { href: '/app/validar', iconeKey: 'validar', label: 'Validar', labelCurto: 'Validar' }
+const ITEM_DESIGNAR: NavItem = { href: '/app/designar', iconeKey: 'novo_usuario', label: 'Designar', labelCurto: 'Designar' }
+const ITEM_TERRITORIOS: NavItem = { href: '/app/territorios', iconeKey: 'territorios', label: 'Territórios', labelCurto: 'Territórios' }
+const ITEM_ANALISE: NavItem = { href: '/app/analise', iconeKey: 'analise', label: 'Análise', labelCurto: 'Análise' }
+const ITEM_LOGS: NavItem = { href: '/app/logs', iconeKey: 'logs', label: 'Logs', labelCurto: 'Logs' }
+const ITEM_USUARIOS: NavItem = { href: '/app/usuarios', iconeKey: 'usuarios', label: 'Usuários', labelCurto: 'Usuários' }
+const ITEM_NOVO_USUARIO: NavItem = { href: '/app/usuarios/novo', iconeKey: 'novo_usuario', label: 'Novo usuário', labelCurto: 'Novo' }
+const ITEM_HIERARQUIA: NavItem = { href: '/app/hierarquia', iconeKey: 'hierarquia', label: 'Hierarquia', labelCurto: 'Hierarquia' }
+const ITEM_CONFIG: NavItem = { href: '/app/configuracoes', iconeKey: 'config', label: 'Configurações', labelCurto: 'Config' }
+const ITEM_PERFIL: NavItem = { href: '/app/perfil', iconeKey: 'perfil', label: 'Perfil', labelCurto: 'Perfil' }
+
+const NAV_DIRIGENTE: NavItem[] = [ITEM_MAPA, ITEM_HISTORICO, ITEM_PERFIL]
+const NAV_SG: NavItem[] = [ITEM_MAPA, ITEM_PROGRESSO, ITEM_DESIGNAR, ITEM_VALIDAR, ITEM_HISTORICO, ITEM_PERFIL]
+const NAV_ST: NavItem[] = [ITEM_MAPA, ITEM_TERRITORIOS, ITEM_DESIGNAR, ITEM_VALIDAR, ITEM_ANALISE, ITEM_PROGRESSO, ITEM_LOGS, ITEM_HISTORICO, ITEM_PERFIL]
+const NAV_ADMIN: NavItem[] = [
+  ITEM_USUARIOS, ITEM_NOVO_USUARIO, ITEM_HIERARQUIA, ITEM_CONFIG,
+  ITEM_MAPA, ITEM_TERRITORIOS, ITEM_DESIGNAR, ITEM_VALIDAR, ITEM_ANALISE, ITEM_PROGRESSO, ITEM_LOGS, ITEM_HISTORICO, ITEM_PERFIL,
+]
+
+function getNavItems(perfil: string): NavItem[] {
+  const todos: Record<string, NavItem[]> = {
+    dirigente: NAV_DIRIGENTE,
+    superintendente_grupo: NAV_SG,
+    superintendente_territorio: NAV_ST,
+    admin: NAV_ADMIN,
   }
-  return todos[perfil as keyof typeof todos] || []
+  return todos[perfil] || []
 }

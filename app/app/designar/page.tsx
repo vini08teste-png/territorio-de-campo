@@ -85,7 +85,8 @@ export default function DesignarPage() {
   const [designacoes, setDesignacoes] = useState<Designacao[]>([])
   const [territorios, setTerritorios] = useState<Territorio[]>([])
   const [quadras, setQuadras] = useState<Quadra[]>([])
-  const [usuarios, setUsuarios] = useState<Usuario[]>([])
+  const [sgsAtivos, setSgsAtivos] = useState<Usuario[]>([])
+  const [dirigentesAtivos, setDirigentesAtivos] = useState<Usuario[]>([])
   const [formST, setFormST] = useState({ territorio_id: '', usuario_id: '' })
   const [formSG, setFormSG] = useState({ quadra_id: '', usuario_id: '' })
 
@@ -98,27 +99,35 @@ export default function DesignarPage() {
     setTimeout(() => setErro(null), 5000)
   }
 
+  // Toda a hierarquia herda o que quem está abaixo pode fazer:
+  // admin e ST também designam dirigentes; admin também designa SGs.
+  const isAdmin = usuarioAtual?.perfil === 'admin'
+  const isST = usuarioAtual?.perfil === 'superintendente_territorio'
+  const isSG = usuarioAtual?.perfil === 'superintendente_grupo'
+  const podeDesignarSG = isST || isAdmin
+  const podeDesignarDirigente = isSG || isST || isAdmin
+
   // ── recarregarDesignacoes declarado ANTES de carregar ──────────────────────
   const recarregarDesignacoes = useCallback(async (
     usuario: Usuario,
-    terrs: Territorio[]
+    terrsDoSG: Territorio[]
   ) => {
-    const isST = usuario.perfil === 'superintendente_territorio'
-    const isSG = usuario.perfil === 'superintendente_grupo'
-
     let query = supabase
       .from('designacoes')
       .select('*, usuario:usuario_id(*), territorio:territorio_id(*), quadra:quadra_id(*)')
       .is('data_fim', null)
       .order('data_inicio', { ascending: false })
 
-    if (isSG) {
-      const terIds = terrs.map((t) => t.id)
+    // Quem só é SG vê apenas as designações dos territórios dele.
+    // ST/admin enxergam tudo (SG↔território e dirigente↔quadra).
+    if (usuario.perfil === 'superintendente_grupo') {
+      const terIds = terrsDoSG.map((t) => t.id)
       if (terIds.length) {
         query = query.in('territorio_id', terIds).not('quadra_id', 'is', null)
+      } else {
+        setDesignacoes([])
+        return
       }
-    } else if (isST) {
-      query = query.is('quadra_id', null)
     }
 
     const { data } = await query
@@ -135,42 +144,59 @@ export default function DesignarPage() {
     const usuario: Usuario = usuarioData
     setUsuarioAtual(usuario)
 
-    const isST = usuario.perfil === 'superintendente_territorio'
-    const isSG = usuario.perfil === 'superintendente_grupo'
+    const souAdmin = usuario.perfil === 'admin'
+    const souST = usuario.perfil === 'superintendente_territorio'
+    const souSG = usuario.perfil === 'superintendente_grupo'
+    const podeSG = souST || souAdmin
+    const podeDirigente = souSG || souST || souAdmin
 
-    let terrs: Territorio[] = []
-    if (isST) {
+    // Territórios pro formulário ST→SG: todos, pra quem pode designar SG
+    let terrsParaFormST: Territorio[] = []
+    if (podeSG) {
       const { data } = await supabase.from('territorios').select('*').order('numero')
-      terrs = data ?? []
-    } else if (isSG) {
+      terrsParaFormST = data ?? []
+    }
+    setTerritorios(terrsParaFormST)
+
+    // Territórios do SG (só usado pra filtrar quadras e a lista de designações dele)
+    let terrsDoSG: Territorio[] = []
+    if (souSG) {
       const { data: desig } = await supabase
         .from('designacoes').select('territorio_id')
         .eq('usuario_id', usuario.id).is('quadra_id', null).is('data_fim', null)
       const ids = (desig ?? []).map((d) => d.territorio_id).filter(Boolean)
       if (ids.length) {
         const { data } = await supabase.from('territorios').select('*').in('id', ids).order('numero')
-        terrs = data ?? []
+        terrsDoSG = data ?? []
       }
     }
-    setTerritorios(terrs)
 
-    if (isSG && terrs.length > 0) {
-      const terIds = terrs.map((t) => t.id)
-      const { data } = await supabase.from('quadras').select('*').in('territorio_id', terIds).order('nome')
-      setQuadras(data ?? [])
+    // Quadras pro formulário SG→Dirigente: só do SG se for só SG; todas se for ST/admin
+    if (podeDirigente) {
+      if (souST || souAdmin) {
+        const { data } = await supabase.from('quadras').select('*').order('nome')
+        setQuadras(data ?? [])
+      } else if (terrsDoSG.length > 0) {
+        const terIds = terrsDoSG.map((t) => t.id)
+        const { data } = await supabase.from('quadras').select('*').in('territorio_id', terIds).order('nome')
+        setQuadras(data ?? [])
+      } else {
+        setQuadras([])
+      }
     }
 
-    if (isST) {
+    if (podeSG) {
       const { data } = await supabase.from('usuarios').select('*')
         .eq('perfil', 'superintendente_grupo').eq('ativo', true).order('nome')
-      setUsuarios(data ?? [])
-    } else if (isSG) {
+      setSgsAtivos(data ?? [])
+    }
+    if (podeDirigente) {
       const { data } = await supabase.from('usuarios').select('*')
         .eq('perfil', 'dirigente').eq('ativo', true).order('nome')
-      setUsuarios(data ?? [])
+      setDirigentesAtivos(data ?? [])
     }
 
-    await recarregarDesignacoes(usuario, terrs)
+    await recarregarDesignacoes(usuario, terrsDoSG)
     setLoading(false)
   }, [recarregarDesignacoes])
 
@@ -218,6 +244,17 @@ export default function DesignarPage() {
       mostrarErro('Este dirigente já está designado para esta quadra.')
       return
     }
+
+    // Evita dois dirigentes cobrindo a mesma quadra ao mesmo tempo
+    const { data: outroDirigente } = await supabase.from('designacoes')
+      .select('id, usuario:usuario_id(nome)')
+      .eq('quadra_id', formSG.quadra_id).is('data_fim', null)
+    if (outroDirigente && outroDirigente.length > 0) {
+      const nomeOutro = (outroDirigente[0].usuario as unknown as { nome?: string } | null)?.nome ?? 'outro dirigente'
+      mostrarErro(`Esta quadra já está designada a ${nomeOutro}. Remova a designação antes de trocar.`)
+      return
+    }
+
     setSalvando(true)
     const { error } = await supabase.from('designacoes').insert({
       usuario_id: formSG.usuario_id,
@@ -251,10 +288,7 @@ export default function DesignarPage() {
 
   if (!usuarioAtual) return null
 
-  const isST = usuarioAtual.perfil === 'superintendente_territorio'
-  const isSG = usuarioAtual.perfil === 'superintendente_grupo'
-
-  if (!isST && !isSG) {
+  if (!podeDesignarSG && !podeDesignarDirigente) {
     return (
       <div style={{ padding: '2rem', textAlign: 'center', color: '#666' }}>
         <p style={{ fontSize: 18 }}>Você não tem permissão para acessar esta página.</p>
@@ -268,7 +302,11 @@ export default function DesignarPage() {
       <div style={{ marginBottom: '2rem' }}>
         <h1 style={{ fontSize: 24, fontWeight: 700, color: '#1A1A1A', margin: 0 }}>Designações</h1>
         <p style={{ fontSize: 15, color: '#666', marginTop: 4 }}>
-          {isST ? 'Atribua Sup. de Grupo aos territórios' : 'Atribua dirigentes às quadras do seu território'}
+          {podeDesignarSG && podeDesignarDirigente
+            ? 'Atribua Sup. de Grupo aos territórios e dirigentes às quadras'
+            : podeDesignarSG
+            ? 'Atribua Sup. de Grupo aos territórios'
+            : 'Atribua dirigentes às quadras do seu território'}
         </p>
       </div>
 
@@ -289,8 +327,8 @@ export default function DesignarPage() {
         </div>
       )}
 
-      {/* Formulário ST → SG */}
-      {isST && (
+      {/* Formulário ST/admin → SG */}
+      {podeDesignarSG && (
         <section style={{ marginBottom: '2.5rem' }}>
           <div style={{ background: '#FFFFFF', border: '0.5px solid #EEEEEE', borderRadius: 12, padding: '1.25rem' }}>
             <h2 style={{ fontSize: 17, fontWeight: 600, color: '#1A1A1A', marginTop: 0, marginBottom: '1.25rem', display: 'flex', alignItems: 'center', gap: 8 }}>
@@ -318,7 +356,7 @@ export default function DesignarPage() {
                   style={{ width: '100%', padding: '12px 14px', fontSize: 16, border: '1px solid #DDDDDD', borderRadius: 8, background: '#FAFAFA', color: '#1A1A1A' }}
                 >
                   <option value="">— Selecione o Sup. de Grupo —</option>
-                  {usuarios.map((u) => <option key={u.id} value={u.id}>{u.nome}</option>)}
+                  {sgsAtivos.map((u) => <option key={u.id} value={u.id}>{u.nome}</option>)}
                 </select>
               </div>
               <button
@@ -337,8 +375,8 @@ export default function DesignarPage() {
         </section>
       )}
 
-      {/* Formulário SG → Dirigente */}
-      {isSG && (
+      {/* Formulário SG/ST/admin → Dirigente */}
+      {podeDesignarDirigente && (
         <section style={{ marginBottom: '2.5rem' }}>
           <div style={{ background: '#FFFFFF', border: '0.5px solid #EEEEEE', borderRadius: 12, padding: '1.25rem' }}>
             <h2 style={{ fontSize: 17, fontWeight: 600, color: '#1A1A1A', marginTop: 0, marginBottom: '1.25rem', display: 'flex', alignItems: 'center', gap: 8 }}>
@@ -348,7 +386,7 @@ export default function DesignarPage() {
               <div>
                 <label style={{ display: 'block', fontSize: 14, fontWeight: 500, color: '#444', marginBottom: 6 }}>Quadra</label>
                 {quadras.length === 0 ? (
-                  <p style={{ color: '#999', fontSize: 15, margin: 0 }}>Nenhuma quadra encontrada no seu território.</p>
+                  <p style={{ color: '#999', fontSize: 15, margin: 0 }}>Nenhuma quadra encontrada.</p>
                 ) : (
                   <select
                     value={formSG.quadra_id}
@@ -362,7 +400,7 @@ export default function DesignarPage() {
               </div>
               <div>
                 <label style={{ display: 'block', fontSize: 14, fontWeight: 500, color: '#444', marginBottom: 6 }}>Dirigente</label>
-                {usuarios.length === 0 ? (
+                {dirigentesAtivos.length === 0 ? (
                   <p style={{ color: '#999', fontSize: 15, margin: 0 }}>Nenhum dirigente ativo cadastrado.</p>
                 ) : (
                   <select
@@ -371,18 +409,18 @@ export default function DesignarPage() {
                     style={{ width: '100%', padding: '12px 14px', fontSize: 16, border: '1px solid #DDDDDD', borderRadius: 8, background: '#FAFAFA', color: '#1A1A1A' }}
                   >
                     <option value="">— Selecione o dirigente —</option>
-                    {usuarios.map((u) => <option key={u.id} value={u.id}>{u.nome}</option>)}
+                    {dirigentesAtivos.map((u) => <option key={u.id} value={u.id}>{u.nome}</option>)}
                   </select>
                 )}
               </div>
               <button
                 onClick={() => void designarDirigente()}
-                disabled={salvando || quadras.length === 0 || usuarios.length === 0}
+                disabled={salvando || quadras.length === 0 || dirigentesAtivos.length === 0}
                 style={{
                   width: '100%', padding: '16px', fontSize: 17, fontWeight: 600,
-                  background: (salvando || quadras.length === 0 || usuarios.length === 0) ? '#CCCCCC' : '#378ADD',
+                  background: (salvando || quadras.length === 0 || dirigentesAtivos.length === 0) ? '#CCCCCC' : '#378ADD',
                   color: '#FFFFFF', border: 'none', borderRadius: 10,
-                  cursor: (salvando || quadras.length === 0 || usuarios.length === 0) ? 'not-allowed' : 'pointer', minHeight: 64,
+                  cursor: (salvando || quadras.length === 0 || dirigentesAtivos.length === 0) ? 'not-allowed' : 'pointer', minHeight: 64,
                 }}
               >
                 {salvando ? 'Salvando…' : '✅ Confirmar Designação'}
@@ -403,10 +441,8 @@ export default function DesignarPage() {
 
         {designacoes.length === 0 ? (
           <div style={{ textAlign: 'center', padding: '2.5rem 1rem', background: '#F7F7F7', borderRadius: 12, border: '1px dashed #DDDDDD' }}>
-            <div style={{ fontSize: 40, marginBottom: 12 }}>{isST ? '🗺️' : '👤'}</div>
-            <p style={{ fontSize: 16, color: '#666', margin: 0 }}>
-              {isST ? 'Nenhum Sup. de Grupo designado ainda.' : 'Nenhum dirigente designado ainda.'}
-            </p>
+            <div style={{ fontSize: 40, marginBottom: 12 }}>📋</div>
+            <p style={{ fontSize: 16, color: '#666', margin: 0 }}>Nenhuma designação ativa ainda.</p>
           </div>
         ) : (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
@@ -414,6 +450,7 @@ export default function DesignarPage() {
               const usuario = d.usuario as Usuario | undefined
               const territorio = d.territorio as Territorio | undefined
               const quadra = d.quadra as Quadra | undefined
+              const ehTerritorio = d.quadra_id === null
               const dataInicio = d.data_inicio
                 ? new Date(d.data_inicio).toLocaleDateString('pt-BR', { day: '2-digit', month: 'short', year: 'numeric' })
                 : '—'
@@ -429,7 +466,7 @@ export default function DesignarPage() {
                       {usuario && <BadgePerfil perfil={usuario.perfil} />}
                     </div>
                     <div style={{ fontSize: 13, color: '#666', marginTop: 3 }}>
-                      {isST
+                      {ehTerritorio
                         ? territorio ? `🗺️ ${territorio.nome} — ${territorio.bairro}` : '—'
                         : quadra ? `📍 ${quadra.nome}` : '—'}
                     </div>

@@ -1,20 +1,51 @@
 'use client'
 import { useEffect, useState } from 'react'
 import { supabase, CORES_STATUS, type Quadra, type Territorio } from '@/lib/supabase'
+import { usePaginaRestrita } from '@/lib/permissoes'
+import { Carregando, SemPermissao } from '@/components/EstadoPagina'
 
 export default function ProgressoPage() {
+  const { usuario, carregando: verificandoAcesso, autorizado } = usePaginaRestrita([
+    'superintendente_grupo', 'superintendente_territorio', 'admin',
+  ])
   const [territorios, setTerritorios] = useState<Territorio[]>([])
   const [quadras, setQuadras] = useState<Quadra[]>([])
 
   useEffect(() => {
-    Promise.all([
-      supabase.from('territorios').select('*'),
-      supabase.from('quadras').select('*'),
-    ]).then(([t, q]) => {
+    if (!usuario || !autorizado) return
+
+    async function carregar() {
+      // Sup. de Grupo só vê o progresso dos territórios em que está designado
+      if (usuario!.perfil === 'superintendente_grupo') {
+        const { data: designacoes } = await supabase
+          .from('designacoes')
+          .select('territorio_id')
+          .eq('usuario_id', usuario!.id)
+          .is('quadra_id', null)
+          .is('data_fim', null)
+
+        const territorioIds = (designacoes ?? []).map((d) => d.territorio_id).filter(Boolean)
+        if (territorioIds.length === 0) { setTerritorios([]); setQuadras([]); return }
+
+        const [t, q] = await Promise.all([
+          supabase.from('territorios').select('*').in('id', territorioIds),
+          supabase.from('quadras').select('*').in('territorio_id', territorioIds),
+        ])
+        setTerritorios(t.data || [])
+        setQuadras(q.data || [])
+        return
+      }
+
+      const [t, q] = await Promise.all([
+        supabase.from('territorios').select('*'),
+        supabase.from('quadras').select('*'),
+      ])
       setTerritorios(t.data || [])
       setQuadras(q.data || [])
-    })
-  }, [])
+    }
+
+    void carregar()
+  }, [usuario, autorizado])
 
   function calcularProgresso(territorioId: string) {
     const qs = quadras.filter(q => q.territorio_id === territorioId)
@@ -23,6 +54,9 @@ export default function ProgressoPage() {
     const soma = qs.reduce((acc, q) => acc + (pesos[q.status as keyof typeof pesos] || 0), 0)
     return { total: qs.length, concluidas: qs.filter(q => q.status === 'concluido').length, pct: Math.round((soma / qs.length) * 100) }
   }
+
+  if (verificandoAcesso) return <Carregando />
+  if (!autorizado) return <SemPermissao />
 
   return (
     <div style={{ padding: 24, maxWidth: 700, margin: '0 auto' }}>

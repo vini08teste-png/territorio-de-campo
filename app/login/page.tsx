@@ -1,15 +1,31 @@
 'use client'
 
-import { useState } from 'react'
-import { useRouter } from 'next/navigation'
+import { Suspense, useEffect, useState } from 'react'
+import { useRouter, useSearchParams } from 'next/navigation'
 import { createBrowserClient } from '@supabase/ssr'
 import Image from 'next/image'
+
 export default function LoginPage() {
+  return (
+    <Suspense fallback={null}>
+      <LoginForm />
+    </Suspense>
+  )
+}
+
+function LoginForm() {
   const router = useRouter()
+  const searchParams = useSearchParams()
   const [email, setEmail] = useState('')
   const [senha, setSenha] = useState('')
   const [erro, setErro] = useState('')
   const [carregando, setCarregando] = useState(false)
+
+  useEffect(() => {
+    if (searchParams.get('desativado') === '1') {
+      setErro('Seu acesso foi desativado. Fale com o administrador.')
+    }
+  }, [searchParams])
 
   async function handleLogin(e: React.FormEvent) {
     e.preventDefault()
@@ -21,10 +37,19 @@ export default function LoginPage() {
       process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
     )
 
-    const { error } = await supabase.auth.signInWithPassword({ email, password: senha })
+    const { data, error } = await supabase.auth.signInWithPassword({ email, password: senha })
 
     if (error) {
       setErro('Email ou senha incorretos.')
+      setCarregando(false)
+      return
+    }
+
+    const { data: usuario } = await supabase.from('usuarios').select('ativo').eq('id', data.user.id).single()
+
+    if (!usuario?.ativo) {
+      await supabase.auth.signOut()
+      setErro('Seu acesso foi desativado. Fale com o administrador.')
       setCarregando(false)
       return
     }

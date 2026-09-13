@@ -2,10 +2,21 @@
 
 import { useEffect, useState } from 'react'
 import { supabase, CORES_STATUS, type Territorio, type Quadra } from '@/lib/supabase'
+import { usePaginaRestrita } from '@/lib/permissoes'
+import { Carregando, SemPermissao } from '@/components/EstadoPagina'
+import { calcularPrazoTerritorio, formatarPrazo } from '@/lib/prazoTerritorio'
+
+interface DesignacaoSG {
+  territorio_id: string
+  data_inicio: string
+}
 
 export default function TerritoriosPage() {
+  const { carregando: verificandoAcesso, autorizado } = usePaginaRestrita(['superintendente_territorio', 'admin'])
   const [territorios, setTerritorios] = useState<Territorio[]>([])
   const [quadras, setQuadras] = useState<Quadra[]>([])
+  const [designacoesSG, setDesignacoesSG] = useState<DesignacaoSG[]>([])
+  const [prazoDias, setPrazoDias] = useState(120)
   const [criando, setCriando] = useState(false)
   const [form, setForm] = useState({ nome: '', numero: '', bairro: '' })
   const [editandoTerr, setEditandoTerr] = useState<Territorio | null>(null)
@@ -21,9 +32,13 @@ export default function TerritoriosPage() {
     void Promise.all([
       supabase.from('territorios').select('*').order('numero'),
       supabase.from('quadras').select('*').order('nome'),
-    ]).then(([t, q]) => {
+      supabase.from('designacoes').select('territorio_id, data_inicio').is('quadra_id', null).is('data_fim', null),
+      supabase.from('configuracoes').select('prazo_territorio_dias').eq('id', 1).single(),
+    ]).then(([t, q, d, c]) => {
       setTerritorios(t.data ?? [])
       setQuadras(q.data ?? [])
+      setDesignacoesSG((d.data as DesignacaoSG[]) ?? [])
+      setPrazoDias(c.data?.prazo_territorio_dias ?? 120)
     })
   }, [])
 
@@ -111,6 +126,9 @@ export default function TerritoriosPage() {
     return Math.round(qs.reduce((a, q) => a + (pesos[q.status] ?? 0), 0) / qs.length * 100)
   }
 
+  if (verificandoAcesso) return <Carregando />
+  if (!autorizado) return <SemPermissao />
+
   return (
     <div style={{ padding: '1.5rem 1rem 4rem', maxWidth: 800, margin: '0 auto' }}>
 
@@ -168,6 +186,8 @@ export default function TerritoriosPage() {
           const qs = quadras.filter((q) => q.territorio_id === t.id)
           const corPct = pct >= 100 ? '#3BAD68' : pct > 50 ? '#F0A030' : '#888'
           const aberto = expandido === t.id
+          const designacao = designacoesSG.find((d) => d.territorio_id === t.id)
+          const prazo = designacao ? calcularPrazoTerritorio(designacao.data_inicio, prazoDias) : null
 
           return (
             <div key={t.id} style={{ background: '#FFFFFF', border: '0.5px solid #EEEEEE', borderRadius: 12, overflow: 'hidden' }}>
@@ -192,6 +212,16 @@ export default function TerritoriosPage() {
                     if (!qtd) return null
                     return <span key={k} style={{ padding: '2px 8px', borderRadius: 20, fontSize: 11, fontWeight: 600, background: v.fill, border: `1px solid ${v.stroke}` }}>{qtd} {v.label}</span>
                   })}
+                  {prazo && (
+                    <span style={{
+                      padding: '2px 8px', borderRadius: 20, fontSize: 11, fontWeight: 700,
+                      background: prazo.vencido ? '#FFF0F0' : '#F7F7F7',
+                      color: prazo.vencido ? '#E05050' : '#666',
+                      border: `1px solid ${prazo.vencido ? '#FFCCCC' : '#DDDDDD'}`,
+                    }}>
+                      {formatarPrazo(prazo)}
+                    </span>
+                  )}
                 </div>
 
                 {/* Ações território */}

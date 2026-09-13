@@ -2,7 +2,9 @@
 
 import { useEffect, useState, useCallback } from 'react'
 import { supabase } from '@/lib/supabase'
-import { getUsuarioAtual } from '@/lib/auth'
+import { usePaginaRestrita } from '@/lib/permissoes'
+import { Carregando, SemPermissao } from '@/components/EstadoPagina'
+import { calcularPrazoTerritorio } from '@/lib/prazoTerritorio'
 
 // ── Tipos ──────────────────────────────────────────────────────────────────────
 type StatusQuadra = 'nao_iniciado' | 'em_andamento' | 'parcial' | 'concluido' | 'pendente'
@@ -57,22 +59,31 @@ const COR_PROGRESSO = (p: number) =>
 
 // ── Componente principal ───────────────────────────────────────────────────────
 export default function AnalisePage() {
+  const { usuario, carregando: verificandoAcesso, autorizado } = usePaginaRestrita(['superintendente_territorio', 'admin'])
   const [loading, setLoading] = useState(true)
   const [dados, setDados] = useState<TerritorioDados[]>([])
   const [ordenar, setOrdenar] = useState<'numero' | 'progresso' | 'nome'>('numero')
   const [busca, setBusca] = useState('')
+  const [territoriosVencidos, setTerritoriosVencidos] = useState(0)
 
   const carregar = useCallback(async () => {
     setLoading(true)
-    const atual = await getUsuarioAtual()
-    if (!atual) { setLoading(false); return }
+    if (!usuario) { setLoading(false); return }
 
-    const { data: territorios } = await supabase
-      .from('territorios').select('*').order('numero')
-    const { data: quadras } = await supabase
-      .from('quadras').select('*')
+    const [{ data: territorios }, { data: quadras }, { data: designacoesSG }, { data: config }] = await Promise.all([
+      supabase.from('territorios').select('*').order('numero'),
+      supabase.from('quadras').select('*'),
+      supabase.from('designacoes').select('territorio_id, data_inicio').is('quadra_id', null).is('data_fim', null),
+      supabase.from('configuracoes').select('prazo_territorio_dias').eq('id', 1).single(),
+    ])
 
     if (!territorios || !quadras) { setLoading(false); return }
+
+    const prazoDias = config?.prazo_territorio_dias ?? 120
+    const vencidos = (designacoesSG ?? []).filter(
+      (d) => calcularPrazoTerritorio(d.data_inicio, prazoDias).vencido
+    ).length
+    setTerritoriosVencidos(vencidos)
 
     const resultado: TerritorioDados[] = territorios.map((t: Territorio) => {
       const qs = (quadras as Quadra[]).filter((q) => q.territorio_id === t.id)
@@ -92,7 +103,10 @@ export default function AnalisePage() {
     setLoading(false)
   }, [])
 
-  useEffect(() => { carregar() }, [carregar])
+  useEffect(() => {
+    if (!usuario || !autorizado) return
+    void carregar()
+  }, [usuario, autorizado, carregar])
 
   // ── Totais globais ────────────────────────────────────────────────────────────
   const totalTerritorios = dados.length
@@ -139,13 +153,9 @@ export default function AnalisePage() {
   }
 
   // ── Render ────────────────────────────────────────────────────────────────────
-  if (loading) {
-    return (
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: 320 }}>
-        <p style={{ color: '#666', fontSize: 16 }}>Carregando análise…</p>
-      </div>
-    )
-  }
+  if (verificandoAcesso) return <Carregando />
+  if (!autorizado) return <SemPermissao />
+  if (loading) return <Carregando texto="Carregando análise…" />
 
   return (
     <div style={{ maxWidth: 800, margin: '0 auto', padding: '1.5rem 1rem 4rem' }}>
@@ -175,6 +185,7 @@ export default function AnalisePage() {
         <MetricCard label="Territórios" valor={totalTerritorios} />
         <MetricCard label="Quadras totais" valor={totalQuadras} />
         <MetricCard label="Concluídas" valor={totalConcluidas} cor="#3BAD68" />
+        <MetricCard label="Territórios vencidos" valor={territoriosVencidos} cor={territoriosVencidos > 0 ? '#E05050' : undefined} />
       </div>
 
       {/* Gráfico de barras */}

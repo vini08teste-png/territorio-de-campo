@@ -97,6 +97,35 @@ export default function LogsPage() {
   const [filtroPerfil, setFiltroPerfil] = useState<string>('todos')
   const [busca, setBusca] = useState('')
   const [autorizado, setAutorizado] = useState(false)
+  const [limpoEm, setLimpoEm] = useState<number | null>(null)
+
+  useEffect(() => {
+    try {
+      const salvo = localStorage.getItem('logsLimpoEm')
+      if (salvo) setLimpoEm(Number(salvo))
+    } catch {
+      // localStorage indisponível — ignora
+    }
+  }, [])
+
+  function limparTela() {
+    const agora = Date.now()
+    setLimpoEm(agora)
+    try {
+      localStorage.setItem('logsLimpoEm', String(agora))
+    } catch {
+      // localStorage indisponível — ignora
+    }
+  }
+
+  function restaurarTela() {
+    setLimpoEm(null)
+    try {
+      localStorage.removeItem('logsLimpoEm')
+    } catch {
+      // localStorage indisponível — ignora
+    }
+  }
 
   const carregar = useCallback(async () => {
     setLoading(true)
@@ -220,6 +249,7 @@ export default function LogsPage() {
 
   // ── Filtros ────────────────────────────────────────────────────────────────
   const logsFiltrados = logs.filter((l) => {
+    if (limpoEm && new Date(l.criado_em).getTime() <= limpoEm) return false
     if (filtroTipo !== 'todos' && l.tipo !== filtroTipo) return false
     if (filtroPerfil !== 'todos' && l.usuario?.perfil !== filtroPerfil) return false
     if (busca) {
@@ -230,8 +260,10 @@ export default function LogsPage() {
   })
 
   // ── Contagens por tipo ─────────────────────────────────────────────────────
+  const logsVisiveis = limpoEm ? logs.filter((l) => new Date(l.criado_em).getTime() > limpoEm) : logs
+
   const contagem = (tipo: FiltroTipo) =>
-    tipo === 'todos' ? logs.length : logs.filter((l) => l.tipo === tipo).length
+    tipo === 'todos' ? logsVisiveis.length : logsVisiveis.filter((l) => l.tipo === tipo).length
 
   if (loading) {
     return (
@@ -253,11 +285,42 @@ export default function LogsPage() {
     <div style={{ maxWidth: 800, margin: '0 auto', padding: '1.5rem 1rem 4rem' }}>
 
       {/* Header */}
-      <div style={{ marginBottom: '1.5rem' }}>
-        <h1 style={{ fontSize: 24, fontWeight: 700, color: '#1A1A1A', margin: 0 }}>Logs do sistema</h1>
-        <p style={{ fontSize: 15, color: '#666', marginTop: 4 }}>
-          {logs.length} registros — últimas atividades de todos os usuários
-        </p>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 12, marginBottom: '1.5rem', flexWrap: 'wrap' }}>
+        <div>
+          <h1 style={{ fontSize: 24, fontWeight: 700, color: '#1A1A1A', margin: 0 }}>Logs do sistema</h1>
+          <p style={{ fontSize: 15, color: '#666', marginTop: 4 }}>
+            {logsFiltrados.length} registros{limpoEm ? ' visíveis (tela limpa manualmente)' : ' — últimas atividades de todos os usuários'}
+          </p>
+        </div>
+
+        {limpoEm ? (
+          <button
+            onClick={restaurarTela}
+            style={{
+              padding: '9px 16px', fontSize: 14, fontWeight: 600,
+              background: '#F7F7F7', color: '#378ADD',
+              border: '1px solid #DDDDDD', borderRadius: 10, cursor: 'pointer',
+              whiteSpace: 'nowrap',
+            }}
+          >
+            ↺ Restaurar
+          </button>
+        ) : (
+          <button
+            onClick={limparTela}
+            disabled={logs.length === 0}
+            style={{
+              padding: '9px 16px', fontSize: 14, fontWeight: 600,
+              background: '#FFF0F0', color: '#E05050',
+              border: '1px solid #FFCCCC', borderRadius: 10,
+              cursor: logs.length === 0 ? 'not-allowed' : 'pointer',
+              opacity: logs.length === 0 ? 0.5 : 1,
+              whiteSpace: 'nowrap',
+            }}
+          >
+            🧹 Limpar tela
+          </button>
+        )}
       </div>
 
       {/* Filtros de tipo (pills) */}

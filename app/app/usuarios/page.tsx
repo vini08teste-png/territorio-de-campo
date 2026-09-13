@@ -2,10 +2,25 @@
 
 import { useEffect, useState } from 'react'
 import { supabase, CORES_PERFIL, type Usuario, type Perfil } from '@/lib/supabase'
+import { getAccessToken } from '@/lib/auth'
+import { usePaginaRestrita } from '@/lib/permissoes'
+import { Carregando, SemPermissao } from '@/components/EstadoPagina'
 import Link from 'next/link'
 
 interface UsuarioComCongregacao extends Usuario {
   congregacao?: string
+}
+
+interface TerritorioOpcao {
+  id: string
+  nome: string
+  numero: string
+}
+
+interface QuadraOpcao {
+  id: string
+  nome: string
+  territorio_id: string
 }
 
 const PERFIS: { value: Perfil; label: string }[] = [
@@ -16,10 +31,14 @@ const PERFIS: { value: Perfil; label: string }[] = [
 ]
 
 export default function UsuariosPage() {
+  const { carregando: verificandoAcesso, autorizado } = usePaginaRestrita(['admin'])
   const [usuarios, setUsuarios] = useState<UsuarioComCongregacao[]>([])
   const [carregando, setCarregando] = useState(true)
   const [busca, setBusca] = useState('')
   const [editando, setEditando] = useState<UsuarioComCongregacao | null>(null)
+  const [novoNome, setNovoNome] = useState('')
+  const [novoEmail, setNovoEmail] = useState('')
+  const [novaSenha, setNovaSenha] = useState('')
   const [novoPerfil, setNovoPerfil] = useState<Perfil>('dirigente')
   const [novaCongregacao, setNovaCongregacao] = useState('')
   const [salvando, setSalvando] = useState(false)
@@ -27,16 +46,25 @@ export default function UsuariosPage() {
   const [sucesso, setSucesso] = useState<string | null>(null)
   const [erro, setErro] = useState<string | null>(null)
 
+  const [territorios, setTerritorios] = useState<TerritorioOpcao[]>([])
+  const [quadras, setQuadras] = useState<QuadraOpcao[]>([])
+  const [designacoesAtuais, setDesignacoesAtuais] = useState<{ id: string; valor: string }[]>([])
+  const [designacoesSelecionadas, setDesignacoesSelecionadas] = useState<Set<string>>(new Set())
+  const [carregandoDesignacao, setCarregandoDesignacao] = useState(false)
+
   useEffect(() => {
-    void supabase
-      .from('usuarios')
-      .select('*')
-      .order('nome')
-      .then(({ data }) => {
-        setUsuarios(data ?? [])
-        setCarregando(false)
-      })
-  }, [])
+    if (verificandoAcesso || !autorizado) return
+    void Promise.all([
+      supabase.from('usuarios').select('*').order('nome'),
+      supabase.from('territorios').select('id, nome, numero').order('numero'),
+      supabase.from('quadras').select('id, nome, territorio_id').order('nome'),
+    ]).then(([u, t, q]) => {
+      setUsuarios(u.data ?? [])
+      setTerritorios((t.data as TerritorioOpcao[]) ?? [])
+      setQuadras((q.data as QuadraOpcao[]) ?? [])
+      setCarregando(false)
+    })
+  }, [verificandoAcesso, autorizado])
 
   function mostrarSucesso(msg: string) {
     setSucesso(msg)
@@ -66,46 +94,173 @@ export default function UsuariosPage() {
     mostrarSucesso(ativo ? 'Usuário desativado.' : 'Usuário ativado.')
   }
 
-  function abrirEdicao(u: UsuarioComCongregacao) {
+  async function abrirEdicao(u: UsuarioComCongregacao) {
     setEditando(u)
+    setNovoNome(u.nome)
+    setNovoEmail(u.email)
+    setNovaSenha('')
     setNovoPerfil(u.perfil)
     setNovaCongregacao(u.congregacao ?? '')
+    setDesignacoesAtuais([])
+    setDesignacoesSelecionadas(new Set())
+
+    if (u.perfil === 'dirigente' || u.perfil === 'superintendente_grupo') {
+      setCarregandoDesignacao(true)
+      const { data } = await supabase
+        .from('designacoes')
+        .select('id, territorio_id, quadra_id')
+        .eq('usuario_id', u.id)
+        .is('data_fim', null)
+        .order('data_inicio', { ascending: false })
+
+      const atuais = (data ?? []).map((d) => ({
+        id: d.id,
+        valor: (u.perfil === 'dirigente' ? d.quadra_id : d.territorio_id) ?? '',
+      })).filter((d) => d.valor)
+
+      setDesignacoesAtuais(atuais)
+      setDesignacoesSelecionadas(new Set(atuais.map((d) => d.valor)))
+      setCarregandoDesignacao(false)
+    }
+  }
+
+  function alternarDesignacao(valor: string) {
+    setDesignacoesSelecionadas((prev) => {
+      const novo = new Set(prev)
+      if (novo.has(valor)) novo.delete(valor)
+      else novo.add(valor)
+      return novo
+    })
   }
 
   async function salvarEdicao() {
     if (!editando) return
 
-    setSalvando(true)
-
-    const { error } = await supabase
-      .from('usuarios')
-      .update({
-        perfil: novoPerfil,
-        congregacao: novaCongregacao.trim(),
-      })
-      .eq('id', editando.id)
-
-    if (error) {
-      mostrarErro('Erro ao salvar edição.')
-      setSalvando(false)
+    if (novaSenha && novaSenha.length < 6) {
+      mostrarErro('Senha deve ter no mínimo 6 caracteres.')
       return
     }
 
-    setUsuarios((prev) =>
-      prev.map((u) =>
-        u.id === editando.id
-          ? {
-              ...u,
-              perfil: novoPerfil,
-              congregacao: novaCongregacao.trim(),
-            }
-          : u
-      )
-    )
+    setSalvando(true)
 
-    mostrarSucesso(`${editando.nome} atualizado!`)
-    setEditando(null)
-    setSalvando(false)
+    try {
+      const token = await getAccessToken()
+      const res = await fetch('/api/usuarios', {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          id: editando.id,
+          nome: novoNome.trim(),
+          email: novoEmail.trim(),
+          perfil: novoPerfil,
+          senha: novaSenha || undefined,
+        }),
+      })
+
+      const data = (await res.json()) as { ok?: boolean; error?: string }
+
+      if (!res.ok || data.error) {
+        mostrarErro(data.error ?? 'Erro ao salvar edição.')
+        return
+      }
+
+      const { error } = await supabase
+        .from('usuarios')
+        .update({ congregacao: novaCongregacao.trim() })
+        .eq('id', editando.id)
+
+      if (error) {
+        mostrarErro('Dados salvos, mas houve erro ao salvar a congregação.')
+        return
+      }
+
+      if (novoPerfil === 'dirigente' || novoPerfil === 'superintendente_grupo') {
+        const valoresOriginais = new Set(designacoesAtuais.map((d) => d.valor))
+        const paraAdicionar = [...designacoesSelecionadas].filter((v) => !valoresOriginais.has(v))
+        const paraRemover = designacoesAtuais.filter((d) => !designacoesSelecionadas.has(d.valor))
+
+        if (novoPerfil === 'superintendente_grupo' && paraAdicionar.length > 0) {
+          const { data: conflitos } = await supabase
+            .from('designacoes')
+            .select('territorio_id')
+            .in('territorio_id', paraAdicionar)
+            .is('quadra_id', null)
+            .is('data_fim', null)
+            .neq('usuario_id', editando.id)
+
+          if (conflitos && conflitos.length > 0) {
+            mostrarErro('Dados salvos, mas um dos territórios selecionados já tem outro Sup. de Grupo.')
+            return
+          }
+        }
+
+        if (novoPerfil === 'dirigente' && paraAdicionar.length > 0) {
+          const { data: conflitos } = await supabase
+            .from('designacoes')
+            .select('quadra_id')
+            .in('quadra_id', paraAdicionar)
+            .is('data_fim', null)
+            .neq('usuario_id', editando.id)
+
+          if (conflitos && conflitos.length > 0) {
+            mostrarErro('Dados salvos, mas uma das quadras selecionadas já está designada a outro dirigente.')
+            return
+          }
+        }
+
+        for (const d of paraRemover) {
+          await supabase.from('designacoes').update({ data_fim: new Date().toISOString() }).eq('id', d.id)
+        }
+
+        for (const valor of paraAdicionar) {
+          if (novoPerfil === 'dirigente') {
+            const quadra = quadras.find((q) => q.id === valor)
+            await supabase.from('designacoes').insert({
+              usuario_id: editando.id,
+              territorio_id: quadra?.territorio_id ?? null,
+              quadra_id: valor,
+              data_inicio: new Date().toISOString(),
+            })
+          } else {
+            await supabase.from('designacoes').insert({
+              usuario_id: editando.id,
+              territorio_id: valor,
+              quadra_id: null,
+              data_inicio: new Date().toISOString(),
+            })
+          }
+        }
+      } else if (designacoesAtuais.length > 0) {
+        // Perfil mudou pra algo sem designação de campo — encerra as antigas
+        for (const d of designacoesAtuais) {
+          await supabase.from('designacoes').update({ data_fim: new Date().toISOString() }).eq('id', d.id)
+        }
+      }
+
+      setUsuarios((prev) =>
+        prev.map((u) =>
+          u.id === editando.id
+            ? {
+                ...u,
+                nome: novoNome.trim(),
+                email: novoEmail.trim(),
+                perfil: novoPerfil,
+                congregacao: novaCongregacao.trim(),
+              }
+            : u
+        )
+      )
+
+      mostrarSucesso(`${novoNome.trim()} atualizado!`)
+      setEditando(null)
+    } catch {
+      mostrarErro('Erro de conexão ao salvar edição.')
+    } finally {
+      setSalvando(false)
+    }
   }
 
   async function excluirUsuario(u: UsuarioComCongregacao) {
@@ -114,8 +269,10 @@ export default function UsuariosPage() {
     setExcluindo(u.id)
 
     try {
+      const token = await getAccessToken()
       const res = await fetch(`/api/usuarios?id=${u.id}`, {
         method: 'DELETE',
+        headers: { Authorization: `Bearer ${token}` },
       })
 
       const data = (await res.json()) as { ok?: boolean; error?: string }
@@ -140,6 +297,9 @@ export default function UsuariosPage() {
     u.email.toLowerCase().includes(termo) ||
     (u.congregacao ?? '').toLowerCase().includes(termo)
   )
+
+  if (verificandoAcesso) return <Carregando />
+  if (!autorizado) return <SemPermissao />
 
   return (
     <div style={{
@@ -389,6 +549,8 @@ export default function UsuariosPage() {
             padding: '28px 24px',
             width: '100%',
             maxWidth: 420,
+            maxHeight: '90vh',
+            overflowY: 'auto',
             boxShadow: '0 8px 32px rgba(0,0,0,0.15)',
             boxSizing: 'border-box',
           }}>
@@ -396,19 +558,101 @@ export default function UsuariosPage() {
               fontSize: 18,
               fontWeight: 700,
               color: '#1A1A1A',
-              margin: '0 0 4px',
+              margin: '0 0 20px',
             }}>
               Editar usuário
             </h2>
 
-            <p style={{
-              fontSize: 14,
-              color: '#888',
-              margin: '0 0 20px',
-              overflowWrap: 'anywhere',
-            }}>
-              {editando.nome} · {editando.email}
-            </p>
+            <div style={{ marginBottom: 16 }}>
+              <label style={{
+                display: 'block',
+                fontSize: 13,
+                fontWeight: 500,
+                color: '#444',
+                marginBottom: 6,
+              }}>
+                Nome
+              </label>
+
+              <input
+                type="text"
+                value={novoNome}
+                onChange={(e) => setNovoNome(e.target.value)}
+                placeholder="Nome completo"
+                style={{
+                  width: '100%',
+                  padding: '11px 14px',
+                  fontSize: 15,
+                  border: '1px solid #DDDDDD',
+                  borderRadius: 8,
+                  background: '#FAFAFA',
+                  color: '#1A1A1A',
+                  outline: 'none',
+                  boxSizing: 'border-box',
+                }}
+              />
+            </div>
+
+            <div style={{ marginBottom: 16 }}>
+              <label style={{
+                display: 'block',
+                fontSize: 13,
+                fontWeight: 500,
+                color: '#444',
+                marginBottom: 6,
+              }}>
+                Email
+              </label>
+
+              <input
+                type="email"
+                value={novoEmail}
+                onChange={(e) => setNovoEmail(e.target.value)}
+                placeholder="email@exemplo.com"
+                style={{
+                  width: '100%',
+                  padding: '11px 14px',
+                  fontSize: 15,
+                  border: '1px solid #DDDDDD',
+                  borderRadius: 8,
+                  background: '#FAFAFA',
+                  color: '#1A1A1A',
+                  outline: 'none',
+                  boxSizing: 'border-box',
+                }}
+              />
+            </div>
+
+            <div style={{ marginBottom: 16 }}>
+              <label style={{
+                display: 'block',
+                fontSize: 13,
+                fontWeight: 500,
+                color: '#444',
+                marginBottom: 6,
+              }}>
+                Nova senha
+              </label>
+
+              <input
+                type="password"
+                value={novaSenha}
+                onChange={(e) => setNovaSenha(e.target.value)}
+                placeholder="Deixe em branco para não alterar"
+                minLength={6}
+                style={{
+                  width: '100%',
+                  padding: '11px 14px',
+                  fontSize: 15,
+                  border: '1px solid #DDDDDD',
+                  borderRadius: 8,
+                  background: '#FAFAFA',
+                  color: '#1A1A1A',
+                  outline: 'none',
+                  boxSizing: 'border-box',
+                }}
+              />
+            </div>
 
             <div style={{ marginBottom: 16 }}>
               <label style={{
@@ -463,7 +707,7 @@ export default function UsuariosPage() {
                   return (
                     <button
                       key={p.value}
-                      onClick={() => setNovoPerfil(p.value)}
+                      onClick={() => { setNovoPerfil(p.value); setDesignacoesSelecionadas(new Set()) }}
                       style={{
                         padding: '12px 16px',
                         borderRadius: 10,
@@ -484,6 +728,64 @@ export default function UsuariosPage() {
                 })}
               </div>
             </div>
+
+            {(novoPerfil === 'dirigente' || novoPerfil === 'superintendente_grupo') && (
+              <div style={{ marginBottom: 24 }}>
+                <label style={{
+                  display: 'block',
+                  fontSize: 13,
+                  fontWeight: 500,
+                  color: '#444',
+                  marginBottom: 6,
+                }}>
+                  {novoPerfil === 'dirigente' ? 'Quadras designadas' : 'Territórios designados'}
+                  <span style={{ fontWeight: 400, color: '#999' }}> — pode marcar mais de uma</span>
+                </label>
+
+                {carregandoDesignacao ? (
+                  <p style={{ fontSize: 13, color: '#999', margin: 0 }}>Carregando…</p>
+                ) : (
+                  <div style={{
+                    display: 'flex', flexDirection: 'column', gap: 6,
+                    maxHeight: 220, overflowY: 'auto',
+                    border: '1px solid #DDDDDD', borderRadius: 8,
+                    background: '#FAFAFA', padding: 8,
+                  }}>
+                    {(novoPerfil === 'dirigente' ? quadras : territorios).length === 0 && (
+                      <span style={{ fontSize: 13, color: '#999', padding: 4 }}>
+                        {novoPerfil === 'dirigente' ? 'Nenhuma quadra cadastrada.' : 'Nenhum território cadastrado.'}
+                      </span>
+                    )}
+
+                    {novoPerfil === 'dirigente'
+                      ? quadras.map((q) => {
+                          const t = territorios.find((terr) => terr.id === q.territorio_id)
+                          const marcado = designacoesSelecionadas.has(q.id)
+                          return (
+                            <label key={q.id} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '5px 6px', fontSize: 14, color: '#1A1A1A', cursor: 'pointer' }}>
+                              <input type="checkbox" checked={marcado} onChange={() => alternarDesignacao(q.id)} />
+                              {t ? `#${t.numero} ${t.nome} — ` : ''}{q.nome}
+                            </label>
+                          )
+                        })
+                      : territorios.map((t) => {
+                          const marcado = designacoesSelecionadas.has(t.id)
+                          return (
+                            <label key={t.id} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '5px 6px', fontSize: 14, color: '#1A1A1A', cursor: 'pointer' }}>
+                              <input type="checkbox" checked={marcado} onChange={() => alternarDesignacao(t.id)} />
+                              #{t.numero} — {t.nome}
+                            </label>
+                          )
+                        })}
+                  </div>
+                )}
+                <p style={{ fontSize: 12, color: '#999', marginTop: 6 }}>
+                  {novoPerfil === 'dirigente'
+                    ? 'As quadras onde essa pessoa faz o trabalho de campo.'
+                    : 'Os territórios que essa pessoa supervisiona e valida.'}
+                </p>
+              </div>
+            )}
 
             <div style={{
               display: 'flex',

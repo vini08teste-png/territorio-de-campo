@@ -9,6 +9,8 @@ interface Config {
   lat: number
   lng: number
   superintendente_id: string
+  prazo_territorio_dias: number
+  bloquear_territorio_vencido: boolean
 }
 
 interface ST {
@@ -23,6 +25,8 @@ const DEFAULTS: Config = {
   lat: -6.52,
   lng: -49.85,
   superintendente_id: '',
+  prazo_territorio_dias: 120,
+  bloquear_territorio_vencido: false,
 }
 
 export default function ConfiguracoesPage() {
@@ -51,6 +55,8 @@ export default function ConfiguracoesPage() {
         lat: data.lat ?? -6.52,
         lng: data.lng ?? -49.85,
         superintendente_id: data.superintendente_id ?? '',
+        prazo_territorio_dias: data.prazo_territorio_dias ?? 120,
+        bloquear_territorio_vencido: data.bloquear_territorio_vencido ?? false,
       })
     }
 
@@ -93,16 +99,18 @@ export default function ConfiguracoesPage() {
       lat: config.lat,
       lng: config.lng,
       superintendente_id: config.superintendente_id || null,
+      prazo_territorio_dias: config.prazo_territorio_dias,
+      bloquear_territorio_vencido: config.bloquear_territorio_vencido,
     }, { onConflict: 'id' })
     setSalvando(false)
- if (error) {
-    alert('Erro ao salvar: ' + (error as Error).message)
-  return
-  // setSucesso(true)
-  //     setTimeout(() => setSucesso(false), 3000)
-  //   }
-    }setSucesso(true)
-setTimeout(() => setSucesso(false), 3000)
+
+    if (error) {
+      alert('Erro ao salvar: ' + error.message)
+      return
+    }
+
+    setSucesso(true)
+    setTimeout(() => setSucesso(false), 3000)
   }
 
   if (loading) return (
@@ -235,6 +243,44 @@ setTimeout(() => setSucesso(false), 3000)
               ))}
             </select>
           )}
+        </div>
+
+        {/* Prazo de território */}
+        <div style={{ background: '#FFFFFF', border: '0.5px solid #EEEEEE', borderRadius: 12, padding: '1.25rem', marginBottom: '1.5rem' }}>
+          <h2 style={{ fontSize: 15, fontWeight: 600, color: '#1A1A1A', marginTop: 0, marginBottom: 4 }}>
+            Prazo de território
+          </h2>
+          <p style={{ fontSize: 13, color: '#888', marginBottom: '1rem' }}>
+            Quanto tempo um Sup. de Grupo pode ficar com um território antes de aparecer como vencido nas telas.
+          </p>
+
+          <div style={{ marginBottom: 16 }}>
+            <label style={{ display: 'block', fontSize: 13, fontWeight: 500, color: '#444', marginBottom: 6 }}>
+              Prazo (em dias)
+            </label>
+            <input
+              type="number" min={1} value={config.prazo_territorio_dias}
+              onChange={(e) => setConfig((c) => ({ ...c, prazo_territorio_dias: parseInt(e.target.value, 10) || 1 }))}
+              style={{ width: '100%', padding: '12px 14px', fontSize: 15, border: '1px solid #DDDDDD', borderRadius: 8, background: '#FAFAFA', color: '#1A1A1A', outline: 'none', boxSizing: 'border-box' }}
+            />
+            <p style={{ fontSize: 12, color: '#AAAAAA', marginTop: 4 }}>120 dias ≈ 4 meses.</p>
+          </div>
+
+          <label style={{ display: 'flex', alignItems: 'flex-start', gap: 10, cursor: 'pointer' }}>
+            <input
+              type="checkbox"
+              checked={config.bloquear_territorio_vencido}
+              onChange={(e) => setConfig((c) => ({ ...c, bloquear_territorio_vencido: e.target.checked }))}
+              style={{ marginTop: 3 }}
+            />
+            <span>
+              <span style={{ fontSize: 14, fontWeight: 500, color: '#1A1A1A' }}>Bloquear marcações em território vencido</span>
+              <br />
+              <span style={{ fontSize: 13, color: '#888' }}>
+                Desligado por padrão — o dirigente continua marcando normalmente, só aparece o aviso de vencido. Ligue aqui se quiser travar de verdade.
+              </span>
+            </span>
+          </label>
         </div>
 
         <button

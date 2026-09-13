@@ -3,8 +3,12 @@
 import { useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { CORES_PERFIL, type Perfil } from '@/lib/supabase'
+import { getAccessToken } from '@/lib/auth'
+import { usePaginaRestrita } from '@/lib/permissoes'
+import { Carregando, SemPermissao } from '@/components/EstadoPagina'
 
 export default function NovoUsuarioPage() {
+  const { carregando: verificandoAcesso, autorizado } = usePaginaRestrita(['admin'])
   const router = useRouter()
   const [form, setForm] = useState({ nome: '', email: '', senha: '', perfil: 'dirigente' as Perfil })
   const [salvando, setSalvando] = useState(false)
@@ -16,9 +20,13 @@ export default function NovoUsuarioPage() {
     setErro('')
 
     try {
+      const token = await getAccessToken()
       const res = await fetch('/api/usuarios', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
         body: JSON.stringify(form),
       })
 
@@ -38,6 +46,9 @@ export default function NovoUsuarioPage() {
   }
 
   const cores = CORES_PERFIL[form.perfil]
+
+  if (verificandoAcesso) return <Carregando />
+  if (!autorizado) return <SemPermissao />
 
   return (
     <div style={{ maxWidth: 500, margin: '0 auto', padding: '1.5rem 1rem 4rem' }}>

@@ -1,18 +1,62 @@
 'use client'
 import { useEffect, useState } from 'react'
 import { supabase, CORES_STATUS } from '@/lib/supabase'
+import { usePaginaRestrita } from '@/lib/permissoes'
+import { Carregando, SemPermissao } from '@/components/EstadoPagina'
 
 export default function ValidarPage() {
+  const { usuario, carregando: verificandoAcesso, autorizado } = usePaginaRestrita([
+    'superintendente_grupo', 'superintendente_territorio', 'admin',
+  ])
   const [marcacoes, setMarcacoes] = useState<any[]>([])
   const [carregando, setCarregando] = useState(true)
 
   useEffect(() => {
-    supabase.from('marcacoes')
-      .select('*, quadras(nome, territorio_id), usuarios(nome)')
-      .is('validado_por', null)
-      .order('criado_em', { ascending: false })
-      .then(({ data }) => { setMarcacoes(data || []); setCarregando(false) })
-  }, [])
+    if (!usuario || !autorizado) return
+
+    async function carregar() {
+      let query = supabase.from('marcacoes')
+        .select('*, quadras(nome, territorio_id, territorios(nome, numero)), usuarios(nome)')
+        .is('validado_por', null)
+        .order('criado_em', { ascending: false })
+
+      // Sup. de Grupo só valida marcações dos territórios em que está designado
+      if (usuario!.perfil === 'superintendente_grupo') {
+        const { data: designacoes } = await supabase
+          .from('designacoes')
+          .select('territorio_id')
+          .eq('usuario_id', usuario!.id)
+          .is('quadra_id', null)
+          .is('data_fim', null)
+
+        const territorioIds = (designacoes ?? []).map((d) => d.territorio_id).filter(Boolean)
+
+        if (territorioIds.length === 0) {
+          setMarcacoes([])
+          setCarregando(false)
+          return
+        }
+
+        const { data: quadrasDoTerritorio } = await supabase
+          .from('quadras').select('id').in('territorio_id', territorioIds)
+
+        const quadraIds = (quadrasDoTerritorio ?? []).map((q) => q.id)
+        if (quadraIds.length === 0) {
+          setMarcacoes([])
+          setCarregando(false)
+          return
+        }
+
+        query = query.in('quadra_id', quadraIds)
+      }
+
+      const { data } = await query
+      setMarcacoes(data || [])
+      setCarregando(false)
+    }
+
+    void carregar()
+  }, [usuario, autorizado])
 
   async function validar(id: string) {
     const { data: { session } } = await supabase.auth.getSession()
@@ -25,6 +69,9 @@ export default function ValidarPage() {
     await supabase.from('marcacoes').delete().eq('id', id)
     setMarcacoes(prev => prev.filter(m => m.id !== id))
   }
+
+  if (verificandoAcesso) return <Carregando />
+  if (!autorizado) return <SemPermissao />
 
   return (
     <div style={{ padding: 24, maxWidth: 700, margin: '0 auto' }}>
@@ -40,7 +87,12 @@ export default function ValidarPage() {
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 12 }}>
                   <div>
                     <div style={{ fontSize: 18, fontWeight: 700 }}>{m.quadras?.nome || 'Quadra'}</div>
-                    <div style={{ fontSize: 14, color: '#666' }}>Por: {m.usuarios?.nome}</div>
+                    {m.quadras?.territorios && (
+                      <div style={{ fontSize: 13, color: '#378ADD', fontWeight: 600, marginTop: 1 }}>
+                        🗺️ #{m.quadras.territorios.numero} — {m.quadras.territorios.nome}
+                      </div>
+                    )}
+                    <div style={{ fontSize: 14, color: '#666', marginTop: 2 }}>Por: {m.usuarios?.nome}</div>
                     <div style={{ fontSize: 13, color: '#999' }}>{new Date(m.criado_em).toLocaleString('pt-BR')}</div>
                   </div>
                   <span style={{ padding: '5px 12px', borderRadius: 10, fontSize: 14, fontWeight: 700, background: cor?.fill, border: `1.5px solid ${cor?.stroke}`, color: '#333' }}>

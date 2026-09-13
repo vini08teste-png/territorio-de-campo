@@ -109,8 +109,10 @@ export default function Mapa() {
   const [editandoPonto, setEditandoPonto] = useState<PontoParada | null>(null)
   const [salvandoPonto, setSalvandoPonto] = useState(false)
 
-  const isST = usuario?.perfil === 'superintendente_territorio'
-  const podeMarcar = ['dirigente', 'superintendente_grupo', 'superintendente_territorio'].includes(usuario?.perfil ?? '')
+  // ST e admin (que herda tudo que ST faz) podem desenhar/excluir quadras
+  const podeGerenciarQuadras = usuario?.perfil === 'superintendente_territorio' || usuario?.perfil === 'admin'
+  // Toda a hierarquia herda a capacidade do dirigente de marcar em campo
+  const podeMarcar = !!usuario
 
   function mostrarFeedback(msg: string) {
     setFeedback(msg)
@@ -415,7 +417,7 @@ export default function Mapa() {
       )}
 
       {/* Botões ST */}
-      {isST && !painelAberto && !modoDesenho && !modalCriar && !painelOSM && (
+      {podeGerenciarQuadras && !painelAberto && !modoDesenho && !modalCriar && !painelOSM && (
         <div style={{
           position: 'absolute', bottom: 160, left: 16,
           display: 'flex', flexDirection: 'column', gap: 8, zIndex: 900,
@@ -587,22 +589,21 @@ export default function Mapa() {
               </div>
             )}
 
-            {/* Lista de lados */}
+            {/* Lados — grade compacta em vez de lista de linhas */}
             {!ladoAtivo && quadraAtiva.lados?.length > 0 && (
               <div style={{ marginBottom: 18 }}>
                 <p style={{ fontSize: 13, color: '#666', marginBottom: 8, fontWeight: 500 }}>Selecione um lado:</p>
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(52px, 1fr))', gap: 8 }}>
                   {quadraAtiva.lados.map((l) => {
                     const c = CORES_STATUS[l.status] ?? CORES_STATUS['nao_iniciado']
                     return (
-                      <button key={l.id} onClick={() => abrirPainelLado(quadraAtiva, l)} style={{
-                        display: 'flex', alignItems: 'center', gap: 10, padding: '10px 12px',
-                        borderRadius: 10, background: '#F7F7F7', border: '1px solid #EEE',
-                        cursor: 'pointer', textAlign: 'left',
+                      <button key={l.id} onClick={() => abrirPainelLado(quadraAtiva, l)} title={`Lado ${l.indice + 1} — ${c.label}`} style={{
+                        display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
+                        gap: 2, padding: '8px 4px', borderRadius: 10,
+                        background: c.fill, border: `1.5px solid ${c.stroke}`,
+                        cursor: 'pointer', minHeight: 48,
                       }}>
-                        <span style={{ width: 10, height: 10, borderRadius: '50%', background: c.stroke, flexShrink: 0 }} />
-                        <span style={{ fontSize: 14, color: '#1A1A1A', fontWeight: 500 }}>Lado {l.indice + 1}</span>
-                        <span style={{ marginLeft: 'auto', fontSize: 12, color: '#888' }}>{c.label}</span>
+                        <span style={{ fontSize: 13, fontWeight: 700, color: '#1A1A1A' }}>{l.indice + 1}</span>
                       </button>
                     )
                   })}
@@ -610,34 +611,28 @@ export default function Mapa() {
               </div>
             )}
 
-            {/* Botões de status */}
+            {/* Status — um único seletor no lugar da grade de 5 botões */}
             {podeMarcar && (
               <>
                 <div style={{ marginBottom: 16 }}>
-                  <p style={{ fontSize: 13, color: '#666', marginBottom: 10, fontWeight: 500 }}>
+                  <label style={{ display: 'block', fontSize: 13, color: '#666', marginBottom: 8, fontWeight: 500 }}>
                     {ladoAtivo ? 'Marcar este lado como:' : 'Marcar quadra inteira como:'}
-                  </p>
-                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
-                    {(Object.entries(CORES_STATUS) as [StatusQuadra, any][]).map(([status, cores]) => {
-                      const ativo = ladoAtivo ? ladoAtivo.status === status : quadraAtiva.status === status
-                      return (
-                        <button key={status}
-                          onClick={() => void (ladoAtivo ? atualizarStatusLado(status) : atualizarStatusQuadra(status))}
-                          disabled={salvando}
-                          style={{
-                            padding: '14px 10px', borderRadius: 10,
-                            border: ativo ? `2px solid ${cores.stroke}` : '1.5px solid #EEE',
-                            background: ativo ? cores.fill : '#FFF', color: '#1A1A1A',
-                            fontSize: 14, fontWeight: ativo ? 600 : 400,
-                            cursor: salvando ? 'not-allowed' : 'pointer',
-                            display: 'flex', alignItems: 'center', gap: 6, opacity: salvando ? 0.6 : 1,
-                          }}>
-                          <span style={{ width: 10, height: 10, borderRadius: '50%', background: cores.stroke, flexShrink: 0 }} />
-                          {cores.label}
-                        </button>
-                      )
-                    })}
-                  </div>
+                  </label>
+                  <select
+                    value={ladoAtivo ? ladoAtivo.status : quadraAtiva.status}
+                    disabled={salvando}
+                    onChange={(e) => void (ladoAtivo ? atualizarStatusLado(e.target.value as StatusQuadra) : atualizarStatusQuadra(e.target.value as StatusQuadra))}
+                    style={{
+                      width: '100%', padding: '14px 16px', borderRadius: 10, fontSize: 15, fontWeight: 700,
+                      border: `2px solid ${(ladoAtivo ? CORES_STATUS[ladoAtivo.status] : CORES_STATUS[quadraAtiva.status])?.stroke ?? '#ccc'}`,
+                      background: (ladoAtivo ? CORES_STATUS[ladoAtivo.status] : CORES_STATUS[quadraAtiva.status])?.fill ?? '#eee',
+                      color: '#1A1A1A', cursor: salvando ? 'not-allowed' : 'pointer',
+                    }}
+                  >
+                    {(Object.entries(CORES_STATUS) as [StatusQuadra, any][]).map(([status, cores]) => (
+                      <option key={status} value={status}>{cores.label}</option>
+                    ))}
+                  </select>
                 </div>
 
                 <div style={{ height: 1, background: '#EEE', margin: '16px 0' }} />
@@ -650,6 +645,11 @@ export default function Mapa() {
                 }}>
                   📍 Marcar onde parei — usar GPS
                 </button>
+
+                <p style={{ fontSize: 12, color: '#999', textAlign: 'center', marginTop: 10, lineHeight: 1.4 }}>
+                  🔒 Isso registra sua localização e o endereço aproximado — evite anotar dados
+                  pessoais de moradores além do necessário para o trabalho de campo.
+                </p>
 
                 {/* Lista de pontos desta quadra */}
                 {(() => {
@@ -700,7 +700,7 @@ export default function Mapa() {
             )}
 
             {/* Excluir quadra — só ST */}
-            {isST && !ladoAtivo && (
+            {podeGerenciarQuadras && !ladoAtivo && (
               <>
                 <div style={{ height: 1, background: '#EEE', margin: '12px 0' }} />
                 <button onClick={() => {
