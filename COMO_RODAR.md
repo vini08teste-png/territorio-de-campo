@@ -11,7 +11,24 @@ O schema e as permissões ficam versionados em `supabase/migrations/`:
 
 As duas são idempotentes: rodam num projeto vazio e também num banco criado com o antigo `BANCO_DE_DADOS.sql`.
 
-Com o projeto já criado no Supabase (região South America – São Paulo):
+### Migrations automáticas no deploy
+
+Não é preciso rodar SQL à mão. O `npm run build` executa antes `scripts/migrar-banco.mjs`, que aplica as migrations pendentes com `supabase db push`:
+
+- Só roda se a variável `SUPABASE_DB_URL` existir. Sem ela, o build segue normalmente sem tocar no banco.
+- Na Vercel, só roda no deploy de **produção**. Deploys de preview não mexem no banco.
+- O Supabase registra cada migration aplicada (`supabase_migrations.schema_migrations`), então cada uma roda uma vez só.
+- Se uma migration falhar, o build falha e a versão anterior continua no ar.
+
+Para ativar, pegue a conexão em **Connect → Connection string → Session pooler** no painel do Supabase e cadastre-a como `SUPABASE_DB_URL` na Vercel, só no ambiente Production. Use o **Session pooler** (porta 5432): a conexão direta é só IPv6 e o build da Vercel não a alcança. Caracteres especiais da senha precisam ir codificados na URL (ex.: `@` vira `%40`).
+
+Para aplicar manualmente, com a mesma variável definida:
+
+```bash
+SUPABASE_DB_URL='postgresql://...' npm run migrar:banco
+```
+
+Ou, com login na CLI:
 
 ```bash
 npx supabase login

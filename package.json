@@ -4,7 +4,8 @@
   "private": true,
   "scripts": {
     "dev": "next dev",
-    "build": "next build",
+    "build": "node scripts/migrar-banco.mjs && next build",
+    "migrar:banco": "node scripts/migrar-banco.mjs",
     "start": "next start",
     "lint": "eslint",
     "test": "node --import ./tests/alias.mjs --test \"tests/**/*.test.ts\""
@@ -29,6 +30,7 @@
     "@types/react-dom": "^19",
     "eslint": "^9",
     "eslint-config-next": "16.2.7",
+    "supabase": "^2.117.0",
     "tailwindcss": "^4",
     "typescript": "^5"
   }
