@@ -12,6 +12,8 @@ const eslintConfig = defineConfig([
     "out/**",
     "build/**",
     "next-env.d.ts",
+    // Bibliotecas de terceiros minificadas (Leaflet), servidas localmente.
+    "public/vendor/**",
   ]),
 ]);
 
