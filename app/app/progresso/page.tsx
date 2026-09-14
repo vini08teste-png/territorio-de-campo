@@ -10,6 +10,7 @@ export default function ProgressoPage() {
   ])
   const [territorios, setTerritorios] = useState<Territorio[]>([])
   const [quadras, setQuadras] = useState<Quadra[]>([])
+  const [pontosIdioma, setPontosIdioma] = useState<{ quadra_id: string; qtd_pessoas: number | null }[]>([])
 
   useEffect(() => {
     if (!usuario || !autorizado) return
@@ -27,25 +28,37 @@ export default function ProgressoPage() {
         const territorioIds = (designacoes ?? []).map((d) => d.territorio_id).filter(Boolean)
         if (territorioIds.length === 0) { setTerritorios([]); setQuadras([]); return }
 
-        const [t, q] = await Promise.all([
+        const [t, q, pi] = await Promise.all([
           supabase.from('territorios').select('*').in('id', territorioIds),
           supabase.from('quadras').select('*').in('territorio_id', territorioIds),
+          supabase.from('pontos_parada').select('quadra_id, qtd_pessoas').not('idioma', 'is', null),
         ])
         setTerritorios(t.data || [])
         setQuadras(q.data || [])
+        setPontosIdioma(pi.data || [])
         return
       }
 
-      const [t, q] = await Promise.all([
+      const [t, q, pi] = await Promise.all([
         supabase.from('territorios').select('*'),
         supabase.from('quadras').select('*'),
+        supabase.from('pontos_parada').select('quadra_id, qtd_pessoas').not('idioma', 'is', null),
       ])
       setTerritorios(t.data || [])
       setQuadras(q.data || [])
+      setPontosIdioma(pi.data || [])
     }
 
     void carregar()
   }, [usuario, autorizado])
+
+  function idiomaPorTerritorio(territorioId: string) {
+    const qids = quadras.filter((q) => q.territorio_id === territorioId).map((q) => q.id)
+    const pts = pontosIdioma.filter((p) => qids.includes(p.quadra_id))
+    const pessoas = pts.reduce((s, p) => s + (p.qtd_pessoas ?? 1), 0)
+    const quadrasComIdioma = new Set(pts.map((p) => p.quadra_id)).size
+    return { pessoas, quadrasComIdioma }
+  }
 
   function calcularProgresso(territorioId: string) {
     const qs = quadras.filter(q => q.territorio_id === territorioId)
@@ -65,6 +78,7 @@ export default function ProgressoPage() {
         {territorios.map(t => {
           const prog = calcularProgresso(t.id)
           const qs = quadras.filter(q => q.territorio_id === t.id)
+          const idiomaT = idiomaPorTerritorio(t.id)
           return (
             <div key={t.id} className="card">
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 12 }}>
@@ -90,6 +104,11 @@ export default function ProgressoPage() {
                   )
                 })}
                 {!qs.length && <span style={{ color: '#888', fontSize: 15 }}>Nenhuma quadra cadastrada</span>}
+                {idiomaT.pessoas > 0 && (
+                  <span style={{ padding: '4px 10px', borderRadius: 8, fontSize: 14, fontWeight: 700, background: '#F0EAFF', border: '1.5px solid #D9C6FF', color: '#6B3FD4' }}>
+                    🌐 {idiomaT.pessoas} pessoa{idiomaT.pessoas > 1 ? 's' : ''} de outro idioma · {idiomaT.quadrasComIdioma} quadra{idiomaT.quadrasComIdioma > 1 ? 's' : ''}
+                  </span>
+                )}
               </div>
             </div>
           )

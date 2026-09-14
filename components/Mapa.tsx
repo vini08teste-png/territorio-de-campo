@@ -51,6 +51,8 @@ interface PontoParada {
   lng: number
   endereco: string
   observacao: string
+  idioma?: string | null
+  qtd_pessoas?: number | null
   criado_em?: string
   usuario?: { nome: string }
 }
@@ -139,6 +141,8 @@ export default function Mapa() {
   const [modalPonto, setModalPonto] = useState(false)
   const [pontoCoords, setPontoCoords] = useState<{ lat: number; lng: number } | null>(null)
   const [pontoObs, setPontoObs] = useState('')
+  const [pontoIdioma, setPontoIdioma] = useState('')
+  const [pontoQtdPessoas, setPontoQtdPessoas] = useState('')
   const [editandoPonto, setEditandoPonto] = useState<PontoParada | null>(null)
   const [salvandoPonto, setSalvandoPonto] = useState(false)
 
@@ -171,9 +175,11 @@ export default function Mapa() {
     pontoLayersRef.current.forEach((l) => m.removeLayer(l))
     pontoLayersRef.current = []
     pts.forEach((p) => {
+      const temIdioma = !!p.idioma?.trim()
+      const corPino = temIdioma ? '#8A5CF6' : '#E05050'
       const icon = L.divIcon({
         className: '',
-        html: `<div style="width:28px;height:28px;border-radius:50% 50% 50% 0;background:#E05050;border:2px solid #fff;transform:rotate(-45deg);box-shadow:0 1px 4px rgba(0,0,0,0.3);"></div>`,
+        html: `<div style="width:28px;height:28px;border-radius:50% 50% 50% 0;background:${corPino};border:2px solid #fff;transform:rotate(-45deg);box-shadow:0 1px 4px rgba(0,0,0,0.3);"></div>`,
         iconSize: [28, 28], iconAnchor: [14, 28],
       })
       const marker = L.marker([p.lat, p.lng], { icon }).addTo(m)
@@ -184,9 +190,10 @@ export default function Mapa() {
       const mapsUrl = `https://maps.google.com/?q=${p.lat},${p.lng}`
       marker.bindPopup(`
         <div style="font-size:13px;min-width:200px;line-height:1.6">
-          <b style="color:#E05050;font-size:14px">📍 Ponto de parada</b><br/>
+          <b style="color:${corPino};font-size:14px">📍 Ponto de parada</b><br/>
           <span style="color:#555">👤 ${escaparHtml(nome)}</span><br/>
           ${data ? `<span style="color:#888">🕐 ${data}</span><br/>` : ''}
+          ${temIdioma ? `<span style="display:inline-block;background:#F0EAFF;color:#6B3FD4;font-weight:600;border-radius:6px;padding:2px 8px;margin:2px 0">🌐 ${escaparHtml(p.idioma ?? '')}${p.qtd_pessoas ? ` — ${p.qtd_pessoas} pessoa${p.qtd_pessoas > 1 ? 's' : ''}` : ''}</span><br/>` : ''}
           ${p.observacao ? `<span style="color:#333;font-style:italic">"${escaparHtml(p.observacao)}"</span><br/>` : '<span style="color:#AAAAAA;font-style:italic">Sem observação</span><br/>'}
           <a href="${mapsUrl}" target="_blank" style="color:#378ADD;font-size:12px;font-weight:600">🗺️ Abrir no Google Maps</a>
           <div style="display:flex;gap:6px;margin-top:8px">
@@ -324,13 +331,27 @@ export default function Mapa() {
     // O container fica dentro de um layout flex/dinâmico — o tamanho real
     // só é conhecido depois do primeiro paint. Sem isso o Leaflet pode
     // desenhar um mapa cortado, com espaço em branco embaixo.
-    const observador = new ResizeObserver(() => map.invalidateSize())
+    //
+    // O invalidateSize roda num requestAnimationFrame (não direto no
+    // callback do ResizeObserver): lido nesse ponto, getBoundingClientRect
+    // às vezes ainda reflete um layout intermediário de um reflow que
+    // ainda não terminou (ex: redimensionar a janela do navegador), e o
+    // Leaflet cacheava esse tamanho errado até o próximo resize.
+    let raf = 0
+    const recalcular = () => {
+      cancelAnimationFrame(raf)
+      raf = requestAnimationFrame(() => map.invalidateSize())
+    }
+    const observador = new ResizeObserver(recalcular)
     observador.observe(mapRef.current)
+    window.addEventListener('resize', recalcular)
     const t = setTimeout(() => map.invalidateSize(), 200)
 
     return () => {
       clearTimeout(t)
+      cancelAnimationFrame(raf)
       observador.disconnect()
+      window.removeEventListener('resize', recalcular)
       map.remove()
       mapInstanceRef.current = null
     }
@@ -411,6 +432,8 @@ export default function Mapa() {
       (pos) => {
         setPontoCoords({ lat: pos.coords.latitude, lng: pos.coords.longitude })
         setPontoObs('')
+        setPontoIdioma('')
+        setPontoQtdPessoas('')
         setEditandoPonto(null)
         setModalPonto(true)
       },
@@ -420,11 +443,17 @@ export default function Mapa() {
 
   async function confirmarPonto() {
     if (!pontoCoords || !quadraAtiva || !usuario) return
+    if (pontoIdioma.trim() && !pontoQtdPessoas.trim()) {
+      mostrarFeedback('Informe a quantidade de pessoas de outro idioma.')
+      return
+    }
     setSalvandoPonto(true)
     const { error } = await supabase.from('pontos_parada').insert({
       quadra_id: quadraAtiva.id, lado_id: ladoAtivo?.id ?? null,
       usuario_id: usuario.id, lat: pontoCoords.lat, lng: pontoCoords.lng,
       observacao: pontoObs.trim(),
+      idioma: pontoIdioma.trim() || null,
+      qtd_pessoas: pontoIdioma.trim() ? parseInt(pontoQtdPessoas, 10) : null,
     })
     setSalvandoPonto(false)
     if (!error) {
@@ -438,10 +467,18 @@ export default function Mapa() {
 
   async function salvarObservacaoPonto() {
     if (!editandoPonto) return
+    if (pontoIdioma.trim() && !pontoQtdPessoas.trim()) {
+      mostrarFeedback('Informe a quantidade de pessoas de outro idioma.')
+      return
+    }
     setSalvandoPonto(true)
     // .select() devolve as linhas alteradas: vazio significa que o banco negou (RLS)
     const { data: alterados, error } = await supabase.from('pontos_parada')
-      .update({ observacao: pontoObs.trim() }).eq('id', editandoPonto.id).select('id')
+      .update({
+        observacao: pontoObs.trim(),
+        idioma: pontoIdioma.trim() || null,
+        qtd_pessoas: pontoIdioma.trim() ? parseInt(pontoQtdPessoas, 10) : null,
+      }).eq('id', editandoPonto.id).select('id')
     setSalvandoPonto(false)
     if (error || !alterados?.length) {
       mostrarFeedback('⚠️ Só quem marcou o ponto (ou ST/admin) pode editá-lo.')
@@ -468,7 +505,8 @@ export default function Mapa() {
   }
 
   function editarPontoNoMapa(p: PontoParada) {
-    setEditandoPonto(p); setPontoObs(p.observacao ?? ''); setModalPonto(true)
+    setEditandoPonto(p); setPontoObs(p.observacao ?? ''); setPontoIdioma(p.idioma ?? '')
+    setPontoQtdPessoas(p.qtd_pessoas != null ? String(p.qtd_pessoas) : ''); setModalPonto(true)
   }
 
   useEffect(() => {
@@ -668,6 +706,19 @@ export default function Mapa() {
             <textarea value={pontoObs} onChange={(e) => setPontoObs(e.target.value)}
               placeholder="Ex: Parei na casa azul, voltei depois…" rows={3} autoFocus
               style={{ width: '100%', padding: '12px 14px', fontSize: 15, border: '1px solid #DDD', borderRadius: 10, background: '#FAFAFA', color: '#1A1A1A', resize: 'none', outline: 'none', boxSizing: 'border-box', fontFamily: 'inherit' }} />
+
+            <label style={{ display: 'block', fontSize: 13, fontWeight: 500, color: '#444', margin: '14px 0 8px' }}>
+              🌐 Pessoas de outro idioma (opcional)
+            </label>
+            <div style={{ display: 'flex', gap: 8 }}>
+              <input type="text" value={pontoIdioma} onChange={(e) => setPontoIdioma(e.target.value)}
+                placeholder="Ex: Espanhol, Libras…"
+                style={{ flex: 2, padding: '12px 14px', fontSize: 15, border: '1px solid #DDD', borderRadius: 10, background: '#FAFAFA', color: '#1A1A1A', outline: 'none', boxSizing: 'border-box' }} />
+              <input type="number" min={1} value={pontoQtdPessoas} onChange={(e) => setPontoQtdPessoas(e.target.value)}
+                disabled={!pontoIdioma.trim()} placeholder="Qtd"
+                style={{ flex: 1, padding: '12px 14px', fontSize: 15, border: '1px solid #DDD', borderRadius: 10, background: pontoIdioma.trim() ? '#FAFAFA' : '#F0F0F0', color: '#1A1A1A', outline: 'none', boxSizing: 'border-box' }} />
+            </div>
+
             <div style={{ display: 'flex', gap: 10, marginTop: 14 }}>
               <button onClick={() => setModalPonto(false)}
                 style={{ flex: 1, padding: '13px', fontSize: 15, fontWeight: 500, background: '#F7F7F7', color: '#555', border: '0.5px solid #DDD', borderRadius: 10, cursor: 'pointer' }}>
@@ -820,6 +871,11 @@ export default function Mapa() {
                                 <div style={{ flex: 1, minWidth: 0 }}>
                                   <div style={{ fontSize: 13, fontWeight: 600, color: '#1A1A1A' }}>👤 {nome}</div>
                                   {data && <div style={{ fontSize: 11, color: '#888', marginTop: 1 }}>🕐 {data}</div>}
+                                  {p.idioma && (
+                                    <div style={{ display: 'inline-block', background: '#F0EAFF', color: '#6B3FD4', fontWeight: 600, fontSize: 11, borderRadius: 6, padding: '2px 8px', marginTop: 4 }}>
+                                      🌐 {p.idioma}{p.qtd_pessoas ? ` — ${p.qtd_pessoas} pessoa${p.qtd_pessoas > 1 ? 's' : ''}` : ''}
+                                    </div>
+                                  )}
                                   {p.observacao
                                     ? <div style={{ fontSize: 12, color: '#555', marginTop: 4, fontStyle: 'italic' }}>&ldquo;{p.observacao}&rdquo;</div>
                                     : <div style={{ fontSize: 12, color: '#AAAAAA', marginTop: 4 }}>Sem observação</div>
@@ -830,7 +886,7 @@ export default function Mapa() {
                                   </a>
                                 </div>
                                 <div style={{ display: 'flex', flexDirection: 'column', gap: 4, flexShrink: 0 }}>
-                                  <button onClick={() => { setEditandoPonto(p); setPontoObs(p.observacao ?? ''); setModalPonto(true) }}
+                                  <button onClick={() => editarPontoNoMapa(p)}
                                     style={{ padding: '5px 8px', fontSize: 12, background: '#F0F0F0', border: '0.5px solid #DDD', borderRadius: 6, cursor: 'pointer', color: '#444' }}>✏️</button>
                                   <button onClick={() => void apagarPonto(p.id)}
                                     style={{ padding: '5px 8px', fontSize: 12, background: '#FFF0F0', border: '1px solid #FFCCCC', borderRadius: 6, cursor: 'pointer', color: '#E05050' }}>🗑️</button>

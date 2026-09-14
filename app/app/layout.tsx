@@ -381,7 +381,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
       </div>
 
       {/* Conteúdo */}
-      <main style={{ flex: 1, overflow: 'auto', background: '#F7F7F7' }}>
+      <main style={{ flex: 1, overflow: 'auto', minHeight: 0, background: '#F7F7F7' }}>
         {children}
       </main>
     </div>

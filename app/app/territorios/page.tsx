@@ -15,6 +15,12 @@ interface DesignacaoSG {
   data_inicio: string
 }
 
+interface PontoIdioma {
+  quadra_id: string
+  idioma: string | null
+  qtd_pessoas: number | null
+}
+
 const FORM_VAZIO = { nome: '', numero: '', bairro: '', publicadores: '', familias: '', link_maps: '' }
 type FormTerritorio = typeof FORM_VAZIO
 type CampoExtra = 'publicadores' | 'familias' | 'link_maps'
@@ -65,6 +71,7 @@ export default function TerritoriosPage() {
   const [territorios, setTerritorios] = useState<Territorio[]>([])
   const [quadras, setQuadras] = useState<Quadra[]>([])
   const [designacoesSG, setDesignacoesSG] = useState<DesignacaoSG[]>([])
+  const [pontosIdioma, setPontosIdioma] = useState<PontoIdioma[]>([])
   const [prazoDias, setPrazoDias] = useState(120)
   const [criando, setCriando] = useState(false)
   const [form, setForm] = useState<FormTerritorio>(FORM_VAZIO)
@@ -84,11 +91,13 @@ export default function TerritoriosPage() {
       supabase.from('quadras').select('*').order('nome'),
       supabase.from('designacoes').select('territorio_id, data_inicio').is('quadra_id', null).is('data_fim', null),
       supabase.from('configuracoes').select('prazo_territorio_dias').eq('id', 1).single(),
-    ]).then(([t, q, d, c]) => {
+      supabase.from('pontos_parada').select('quadra_id, idioma, qtd_pessoas').not('idioma', 'is', null),
+    ]).then(([t, q, d, c, pi]) => {
       setTerritorios(t.data ?? [])
       setQuadras(q.data ?? [])
       setDesignacoesSG((d.data as DesignacaoSG[]) ?? [])
       setPrazoDias(c.data?.prazo_territorio_dias ?? 120)
+      setPontosIdioma((pi.data as PontoIdioma[]) ?? [])
     })
   }, [])
 
@@ -235,6 +244,20 @@ export default function TerritoriosPage() {
     mostrarSucesso(`Quadra "${q.nome}" excluída.`)
   }
 
+  function idiomaPorQuadra(qid: string) {
+    const pts = pontosIdioma.filter((p) => p.quadra_id === qid)
+    const pessoas = pts.reduce((s, p) => s + (p.qtd_pessoas ?? 1), 0)
+    return { pessoas, pontos: pts.length }
+  }
+
+  function idiomaPorTerritorio(tid: string) {
+    const qids = quadras.filter((q) => q.territorio_id === tid).map((q) => q.id)
+    const pts = pontosIdioma.filter((p) => qids.includes(p.quadra_id))
+    const pessoas = pts.reduce((s, p) => s + (p.qtd_pessoas ?? 1), 0)
+    const quadrasComIdioma = new Set(pts.map((p) => p.quadra_id)).size
+    return { pessoas, quadrasComIdioma }
+  }
+
   function calcPct(tid: string) {
     const qs = quadras.filter((q) => q.territorio_id === tid)
     if (!qs.length) return 0
@@ -321,6 +344,7 @@ export default function TerritoriosPage() {
           const prazo = designacao ? calcularPrazoTerritorio(designacao.data_inicio, prazoDias) : null
           const rota = linkComoChegar(t)
           const resumo = resumoPublicadoresFamilias(t)
+          const idiomaTerr = idiomaPorTerritorio(t.id)
 
           return (
             <div key={t.id} style={{ background: '#FFFFFF', border: '0.5px solid #EEEEEE', borderRadius: 12, overflow: 'hidden' }}>
@@ -357,6 +381,14 @@ export default function TerritoriosPage() {
                       border: `1px solid ${prazo.vencido ? '#FFCCCC' : '#DDDDDD'}`,
                     }}>
                       {formatarPrazo(prazo)}
+                    </span>
+                  )}
+                  {idiomaTerr.pessoas > 0 && (
+                    <span style={{
+                      padding: '2px 8px', borderRadius: 20, fontSize: 11, fontWeight: 700,
+                      background: '#F0EAFF', color: '#6B3FD4', border: '1px solid #D9C6FF',
+                    }}>
+                      🌐 {idiomaTerr.pessoas} pessoa{idiomaTerr.pessoas > 1 ? 's' : ''} · {idiomaTerr.quadrasComIdioma} quadra{idiomaTerr.quadrasComIdioma > 1 ? 's' : ''}
                     </span>
                   )}
                 </div>
@@ -400,6 +432,7 @@ export default function TerritoriosPage() {
                   ) : (
                     qs.map((q) => {
                       const c = CORES_STATUS[q.status] ?? CORES_STATUS['nao_iniciado']
+                      const idiomaQ = idiomaPorQuadra(q.id)
                       return (
                         <div key={q.id} style={{
                           display: 'flex', alignItems: 'center', gap: 10,
@@ -407,6 +440,14 @@ export default function TerritoriosPage() {
                         }}>
                           <span style={{ width: 10, height: 10, borderRadius: '50%', background: c.stroke, flexShrink: 0 }} />
                           <span style={{ flex: 1, fontSize: 14, color: '#1A1A1A', fontWeight: 500 }}>{q.nome}</span>
+                          {idiomaQ.pessoas > 0 && (
+                            <span title={`${idiomaQ.pessoas} pessoa(s) de outro idioma`} style={{
+                              padding: '2px 7px', borderRadius: 20, fontSize: 11, fontWeight: 700,
+                              background: '#F0EAFF', color: '#6B3FD4', border: '1px solid #D9C6FF',
+                            }}>
+                              🌐 {idiomaQ.pessoas}
+                            </span>
+                          )}
                           <span style={{ fontSize: 11, color: '#888', marginRight: 8 }}>{c.label}</span>
                           <button onClick={() => abrirEdicaoQuadra(q)} style={{
                             padding: '5px 10px', fontSize: 12, fontWeight: 500,

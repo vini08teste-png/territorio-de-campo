@@ -69,6 +69,8 @@ export type PontoParada = {
   lng: number
   endereco?: string
   observacao?: string
+  idioma?: string | null
+  qtd_pessoas?: number | null
   criado_em: string
 }
 
