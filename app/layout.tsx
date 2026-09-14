@@ -17,15 +17,17 @@ export const viewport: Viewport = {
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
-    <html lang="pt-BR">
+    <html lang="pt-BR" suppressHydrationWarning>
       <head>
-        <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
-        <link rel="stylesheet" href="https://unpkg.com/leaflet-draw@1.0.4/dist/leaflet.draw.css" />
+        {/* Servidos localmente (public/vendor) em vez de CDN externo — mapa
+            não depende mais de internet pra fora nem de unpkg estar no ar. */}
+        <link rel="stylesheet" href="/vendor/leaflet/leaflet.css" />
+        <link rel="stylesheet" href="/vendor/leaflet-draw/leaflet.draw.css" />
       </head>
-      <body>
+      <body suppressHydrationWarning>
         {children}
-        <Script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" strategy="beforeInteractive" />
-        <Script src="https://unpkg.com/leaflet-draw@1.0.4/dist/leaflet.draw.js" strategy="beforeInteractive" />
+        <Script src="/vendor/leaflet/leaflet.js" strategy="beforeInteractive" />
+        <Script src="/vendor/leaflet-draw/leaflet.draw.js" strategy="beforeInteractive" />
       </body>
     </html>
   )

@@ -320,7 +320,20 @@ export default function Mapa() {
     }
 
     void carregarQuadras(map)
-    return () => { map.remove(); mapInstanceRef.current = null }
+
+    // O container fica dentro de um layout flex/dinâmico — o tamanho real
+    // só é conhecido depois do primeiro paint. Sem isso o Leaflet pode
+    // desenhar um mapa cortado, com espaço em branco embaixo.
+    const observador = new ResizeObserver(() => map.invalidateSize())
+    observador.observe(mapRef.current)
+    const t = setTimeout(() => map.invalidateSize(), 200)
+
+    return () => {
+      clearTimeout(t)
+      observador.disconnect()
+      map.remove()
+      mapInstanceRef.current = null
+    }
   }, [carregarQuadras])
 
   // ── Status lado ──────────────────────────────────────────────────────────────
@@ -370,6 +383,24 @@ export default function Mapa() {
       mostrarFeedback('Quadra atualizada!')
     }
     setSalvando(false)
+  }
+
+  // ── Centralizar na localização atual ────────────────────────────────────────
+  const [localizando, setLocalizando] = useState(false)
+  function centralizarLocalizacaoAtual() {
+    const m = mapInstanceRef.current
+    if (!m || !navigator.geolocation) return
+    setLocalizando(true)
+    navigator.geolocation.getCurrentPosition(
+      (pos) => {
+        m.setView([pos.coords.latitude, pos.coords.longitude], 16)
+        setLocalizando(false)
+      },
+      () => {
+        mostrarFeedback('⚠️ Não foi possível obter localização')
+        setLocalizando(false)
+      }
+    )
   }
 
   // ── GPS ──────────────────────────────────────────────────────────────────────
@@ -510,6 +541,26 @@ export default function Mapa() {
         }}>
           {feedback}
         </div>
+      )}
+
+      {/* Centralizar na localização atual */}
+      {!modoDesenho && !modalCriar && !modalPonto && !painelOSM && (
+        <button
+          onClick={centralizarLocalizacaoAtual}
+          disabled={localizando}
+          title="Ir para minha localização atual"
+          style={{
+            position: 'absolute', bottom: 96, right: 10, zIndex: 900,
+            width: 40, height: 40, borderRadius: 8,
+            background: '#fff', border: '2px solid rgba(0,0,0,0.2)',
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            fontSize: 18, cursor: localizando ? 'not-allowed' : 'pointer',
+            boxShadow: '0 1px 4px rgba(0,0,0,0.15)',
+            opacity: localizando ? 0.6 : 1,
+          }}
+        >
+          {localizando ? '⏳' : '🎯'}
+        </button>
       )}
 
       {/* Botões ST */}
