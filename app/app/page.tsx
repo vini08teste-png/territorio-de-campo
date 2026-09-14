@@ -8,8 +8,10 @@ const MapaComponent = dynamic(() => import('@/components/Mapa'), { ssr: false })
 
 export default function MapaPage() {
   return (
-    <div style={{ height: '100%', position: 'relative' }}>
-      <MapaComponent />
+    <div style={{ height: '100%', display: 'flex', flexDirection: 'column', position: 'relative' }}>
+      <div style={{ flex: 1, position: 'relative', minHeight: 0 }}>
+        <MapaComponent />
+      </div>
     </div>
   )
 }
