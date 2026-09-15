@@ -31,9 +31,9 @@ const SEM_TERRITORIO = 'sem-territorio'
 // desenhar assim que o mapa abrir.
 const CHAVE_DESENHAR_TERRITORIO = 'territorio_de_campo:desenhar_territorio_id'
 
-const FORM_VAZIO = { nome: '', numero: '', bairro: '', link_maps: '', congregacao: '' }
+const FORM_VAZIO = { nome: '', numero: '', bairro: '', link_maps: '', congregacao: '', cor: '' }
 type FormTerritorio = typeof FORM_VAZIO
-type CampoExtra = 'link_maps' | 'congregacao'
+type CampoExtra = 'link_maps' | 'congregacao' | 'cor'
 
 function camposDoFormulario(form: FormTerritorio) {
   return {
@@ -42,6 +42,7 @@ function camposDoFormulario(form: FormTerritorio) {
     bairro: form.bairro,
     link_maps: textoOuNulo(form.link_maps),
     congregacao: textoOuNulo(form.congregacao),
+    cor: textoOuNulo(form.cor),
   }
 }
 
@@ -57,6 +58,7 @@ function formularioDoTerritorio(t: Territorio): FormTerritorio {
     bairro: valorDoCampo(t.bairro),
     link_maps: valorDoCampo(t.link_maps),
     congregacao: valorDoCampo(t.congregacao),
+    cor: valorDoCampo(t.cor),
   }
 }
 
@@ -69,6 +71,7 @@ export default function TerritoriosPage() {
   const [designacoesSG, setDesignacoesSG] = useState<DesignacaoSG[]>([])
   const [pontosIdioma, setPontosIdioma] = useState<PontoIdioma[]>([])
   const { prazoDe } = useMapaPrazoPorCongregacao()
+  const [busca, setBusca] = useState('')
   const [criando, setCriando] = useState(false)
   const [form, setForm] = useState<FormTerritorio>(FORM_VAZIO)
   const [editandoTerr, setEditandoTerr] = useState<Territorio | null>(null)
@@ -252,10 +255,19 @@ export default function TerritoriosPage() {
   const quadrasSemTerritorio = quadras.filter((q) => !q.territorio_id)
   const semTerritorioAberto = expandido === SEM_TERRITORIO
 
+  const termo = busca.trim().toLowerCase()
+  const territoriosFiltrados = termo
+    ? territorios.filter((t) =>
+        t.nome.toLowerCase().includes(termo) ||
+        String(t.numero).toLowerCase().includes(termo) ||
+        (t.bairro ?? '').toLowerCase().includes(termo)
+      )
+    : territorios
+
   // Agrupa por congregação — cada admin enxerga territórios de várias.
   const gruposPorCongregacao = (() => {
     const grupos = new Map<string, Territorio[]>()
-    for (const t of territorios) {
+    for (const t of territoriosFiltrados) {
       const chave = t.congregacao?.trim() || 'Sem congregação definida'
       const lista = grupos.get(chave) ?? []
       lista.push(t)
@@ -295,6 +307,22 @@ export default function TerritoriosPage() {
 
       {sucesso && <div style={{ background: '#EAF7EF', border: '1px solid #60C898', borderRadius: 10, padding: '10px 14px', marginBottom: 16, color: '#04342C', fontSize: 14 }}>✅ {sucesso}</div>}
       {erro && <div style={{ background: '#FFF0F0', border: '1px solid #E05050', borderRadius: 10, padding: '10px 14px', marginBottom: 16, color: '#501313', fontSize: 14 }}>⚠️ {erro}</div>}
+
+      <input
+        type="search"
+        placeholder="Buscar por nome, número ou bairro…"
+        value={busca}
+        onChange={(e) => setBusca(e.target.value)}
+        style={{
+          width: '100%', padding: '12px 14px', fontSize: 15,
+          border: '1px solid #DDDDDD', borderRadius: 10, background: '#FAFAFA',
+          color: '#1A1A1A', marginBottom: 20, boxSizing: 'border-box', outline: 'none',
+        }}
+      />
+
+      {termo && territoriosFiltrados.length === 0 && (
+        <p style={{ textAlign: 'center', color: '#888', padding: 24 }}>Nenhum território encontrado para &ldquo;{busca}&rdquo;.</p>
+      )}
 
       {/* Form criar território */}
       {criando && (
@@ -411,7 +439,10 @@ export default function TerritoriosPage() {
               <div style={{ padding: '16px' }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 10 }}>
                   <div style={{ flex: 1 }}>
-                    <div style={{ fontSize: 16, fontWeight: 700, color: '#1A1A1A' }}>#{t.numero} — {t.nome}</div>
+                    <div style={{ fontSize: 16, fontWeight: 700, color: '#1A1A1A', display: 'flex', alignItems: 'center', gap: 8 }}>
+                      {t.cor && <span title="Cor personalizada" style={{ width: 10, height: 10, borderRadius: '50%', background: t.cor, flexShrink: 0 }} />}
+                      #{t.numero} — {t.nome}
+                    </div>
                     <div style={{ fontSize: 13, color: '#888', marginTop: 2 }}>{t.bairro}</div>
                     {!t.geojson && (
                       <div style={{ fontSize: 12, color: '#B07A00', marginTop: 2 }}>Sem contorno no mapa</div>
@@ -660,6 +691,21 @@ function CamposExtras({ valores, alterar, souAdmin }: {
         <label style={estiloRotulo}>Link do Google Maps (QR code do cartão)</label>
         <input type="url" value={valores.link_maps} placeholder="https://goo.gl/maps/…"
           onChange={(e) => alterar('link_maps', e.target.value)} style={estiloCampo} />
+      </div>
+      <div>
+        <label style={estiloRotulo}>Cor no mapa</label>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+          <input type="color" value={valores.cor || '#9E9E9E'}
+            onChange={(e) => alterar('cor', e.target.value)}
+            style={{ width: 44, height: 40, padding: 2, border: '1px solid #DDD', borderRadius: 8, background: '#FAFAFA', cursor: 'pointer' }} />
+          {valores.cor ? (
+            <button type="button" onClick={() => alterar('cor', '')} style={{ fontSize: 13, color: '#378ADD', background: 'none', border: 'none', cursor: 'pointer', padding: 0 }}>
+              🔄 Usar cor automática (por progresso)
+            </button>
+          ) : (
+            <span style={{ fontSize: 12, color: '#999' }}>Sem cor escolhida — mostra o progresso (cinza/azul/verde).</span>
+          )}
+        </div>
       </div>
       <div>
         <label style={estiloRotulo}>Congregação</label>
