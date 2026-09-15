@@ -78,6 +78,7 @@ export default function TerritoriosPage() {
   const [criando, setCriando] = useState(false)
   const [form, setForm] = useState<FormTerritorio>(FORM_VAZIO)
   const [editandoTerr, setEditandoTerr] = useState<Territorio | null>(null)
+  const [enviandoFoto, setEnviandoFoto] = useState(false)
   const [formEdit, setFormEdit] = useState<FormTerritorio>(FORM_VAZIO)
   const [importando, setImportando] = useState(false)
   const [editandoQuadra, setEditandoQuadra] = useState<Quadra | null>(null)
@@ -120,6 +121,35 @@ export default function TerritoriosPage() {
     setCriando(false)
     setForm(FORM_VAZIO)
     mostrarSucesso('Território criado!')
+  }
+
+  async function enviarFotoMarco(e: React.ChangeEvent<HTMLInputElement>) {
+    const arquivo = e.target.files?.[0]
+    e.target.value = ''
+    if (!arquivo || !editandoTerr) return
+
+    setEnviandoFoto(true)
+    const extensao = arquivo.name.split('.').pop() || 'jpg'
+    const caminho = `${editandoTerr.id}/marco-${Date.now()}.${extensao}`
+
+    const { error: erroUpload } = await supabase.storage.from('territorios').upload(caminho, arquivo, {
+      cacheControl: '3600', upsert: false,
+    })
+    if (erroUpload) {
+      setEnviandoFoto(false)
+      mostrarErro('Erro ao enviar a foto.')
+      return
+    }
+
+    const { data: publica } = supabase.storage.from('territorios').getPublicUrl(caminho)
+    const { error: erroSalvar } = await supabase.from('territorios')
+      .update({ foto_marco: publica.publicUrl }).eq('id', editandoTerr.id)
+    setEnviandoFoto(false)
+    if (erroSalvar) { mostrarErro('Foto enviada, mas houve erro ao salvar no território.'); return }
+
+    setEditandoTerr((prev) => prev && { ...prev, foto_marco: publica.publicUrl })
+    setTerritorios((prev) => prev.map((t) => t.id === editandoTerr.id ? { ...t, foto_marco: publica.publicUrl } : t))
+    mostrarSucesso('Foto do marco atualizada!')
   }
 
   async function salvarEdicaoTerr(e: React.FormEvent) {
@@ -566,6 +596,22 @@ export default function TerritoriosPage() {
                   style={{ width: '100%', padding: '11px 14px', fontSize: 15, border: '1px solid #DDD', borderRadius: 8, background: '#FAFAFA', outline: 'none', boxSizing: 'border-box' }} />
               </div>
               <CamposExtras valores={formEdit} alterar={(campo, valor) => setFormEdit((p) => ({ ...p, [campo]: valor }))} />
+
+              <div>
+                <label style={{ display: 'block', fontSize: 13, fontWeight: 500, color: '#444', marginBottom: 6 }}>Foto do marco</label>
+                {editandoTerr.foto_marco && (
+                  // eslint-disable-next-line @next/next/no-img-element
+                  <img src={editandoTerr.foto_marco} alt="Marco do território" style={{ width: '100%', maxHeight: 160, objectFit: 'cover', borderRadius: 8, marginBottom: 8, display: 'block' }} />
+                )}
+                <label style={{
+                  display: 'inline-flex', alignItems: 'center', gap: 6, padding: '9px 14px', fontSize: 13, fontWeight: 600,
+                  background: '#F7F7F7', color: '#1A1A1A', border: '0.5px solid #DDD', borderRadius: 8, cursor: enviandoFoto ? 'not-allowed' : 'pointer',
+                }}>
+                  {enviandoFoto ? 'Enviando…' : editandoTerr.foto_marco ? '📷 Trocar foto' : '📷 Enviar foto'}
+                  <input type="file" accept="image/png,image/jpeg,image/webp" hidden disabled={enviandoFoto} onChange={(e) => void enviarFotoMarco(e)} />
+                </label>
+              </div>
+
               <div style={{ display: 'flex', gap: 10, marginTop: 8 }}>
                 <button type="button" onClick={() => setEditandoTerr(null)} style={{ flex: 1, padding: '13px', fontSize: 15, fontWeight: 500, background: '#F7F7F7', color: '#555', border: '0.5px solid #DDD', borderRadius: 10, cursor: 'pointer' }}>Cancelar</button>
                 <button type="submit" disabled={salvando} style={{ flex: 1, padding: '13px', fontSize: 15, fontWeight: 600, background: salvando ? '#CCC' : '#3BAD68', color: '#fff', border: 'none', borderRadius: 10, cursor: salvando ? 'not-allowed' : 'pointer' }}>

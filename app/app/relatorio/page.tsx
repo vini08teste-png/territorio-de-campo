@@ -18,6 +18,12 @@ interface Territorio {
   nome: string
   numero: number
   bairro: string
+  foto_marco: string | null
+}
+
+interface PessoaResumo {
+  id: string
+  nome: string
 }
 
 interface Marcacao {
@@ -35,6 +41,7 @@ interface Marcacao {
 interface PontoParada {
   id: string
   quadra_id: string
+  usuario_id: string
   lat: number
   lng: number
   endereco: string
@@ -75,6 +82,7 @@ function formatarData(iso: string) {
 export default function RelatorioPage() {
   const [loading, setLoading] = useState(true)
   const [territorio, setTerritorio] = useState<Territorio | null>(null)
+  const [sg, setSg] = useState<PessoaResumo | null>(null)
   const [quadras, setQuadras] = useState<Quadra[]>([])
   const [marcacoes, setMarcacoes] = useState<Marcacao[]>([])
   const [pontos, setPontos] = useState<PontoParada[]>([])
@@ -84,6 +92,9 @@ export default function RelatorioPage() {
     setLoading(true)
     const atual = await getUsuarioAtual()
     if (!atual) { setLoading(false); return }
+
+    const { data: sgData } = await supabase.from('usuarios').select('id, nome').eq('id', atual.id).single()
+    setSg(sgData)
 
     // Buscar território designado ao SG
     const { data: desig } = await supabase
@@ -134,6 +145,16 @@ export default function RelatorioPage() {
   }, [carregar])
 
   const progresso = calcularProgresso(quadras)
+
+  // Dirigentes que atuaram no território: quem marcou quadra ou registrou
+  // ponto de parada por lá, sem repetir.
+  const dirigentes = (() => {
+    const porId = new Map<string, string>()
+    for (const m of marcacoes) porId.set(m.usuario_id, m.usuario?.nome ?? '—')
+    for (const p of pontos) porId.set(p.usuario_id, p.usuario?.nome ?? '—')
+    return Array.from(porId, ([id, nome]) => ({ id, nome })).sort((a, b) => a.nome.localeCompare(b.nome))
+  })()
+
   const concluidas = quadras.filter((q) => q.status === 'concluido').length
   const emAndamento = quadras.filter((q) => q.status === 'em_andamento').length
   const parciais = quadras.filter((q) => q.status === 'parcial').length
@@ -164,6 +185,11 @@ export default function RelatorioPage() {
 
       {/* Header */}
       <div style={{ marginBottom: '1.5rem' }}>
+        {territorio.foto_marco && (
+          // eslint-disable-next-line @next/next/no-img-element
+          <img src={territorio.foto_marco} alt={`Marco do território ${territorio.nome}`}
+            style={{ width: '100%', maxHeight: 220, objectFit: 'cover', borderRadius: 12, marginBottom: 12 }} />
+        )}
         <p style={{ fontSize: 13, color: '#888', margin: '0 0 2px', fontWeight: 500 }}>
           Território #{territorio.numero} — {territorio.bairro}
         </p>
@@ -196,6 +222,41 @@ export default function RelatorioPage() {
           <MiniStat label="Pendentes" valor={pendentes} cor="#E05050" />
           <MiniStat label="Não inic." valor={naoIniciadas} cor="#CCCCCC" />
         </div>
+      </div>
+
+      {/* Quem atuou */}
+      <div style={{
+        background: '#FFFFFF', border: '0.5px solid #EEEEEE',
+        borderRadius: 16, padding: '1.25rem 1.5rem', marginBottom: '1.25rem',
+      }}>
+        <h2 style={{ fontSize: 14, fontWeight: 700, color: '#1A1A1A', margin: '0 0 10px' }}>Quem atuou</h2>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: dirigentes.length ? 10 : 0 }}>
+          <span style={{
+            fontSize: 11, fontWeight: 700, padding: '3px 9px', borderRadius: 20,
+            background: '#E8F4FB', color: '#042C53', border: '1px solid #70B8E0',
+          }}>
+            Sup. de Grupo
+          </span>
+          <span style={{ fontSize: 14, color: '#1A1A1A' }}>{sg?.nome ?? '—'}</span>
+        </div>
+        {dirigentes.length > 0 && (
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+            {dirigentes.map((d) => (
+              <span key={d.id} style={{
+                display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 13, color: '#1A1A1A',
+                background: '#F7F7F7', border: '0.5px solid #EEEEEE', borderRadius: 20, padding: '4px 10px',
+              }}>
+                <span style={{
+                  fontSize: 11, fontWeight: 700, padding: '2px 7px', borderRadius: 20,
+                  background: '#FFF8E7', color: '#412402', border: '1px solid #F0C060',
+                }}>
+                  Dirigente
+                </span>
+                {d.nome}
+              </span>
+            ))}
+          </div>
+        )}
       </div>
 
       {/* Abas */}

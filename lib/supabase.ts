@@ -25,6 +25,7 @@ export type Territorio = {
   geojson: Record<string, unknown> | null
   link_maps: string | null
   congregacao: string | null
+  foto_marco: string | null
   criado_por: string
   criado_em: string
 }

@@ -1,9 +1,8 @@
 'use client'
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
-// Cartão de território pra imprimir: mapa com as quadras numeradas + uma
-// legenda com espaço em branco pra anotar o nome de cada rua na mão (o
-// sistema não tem nome de rua cadastrado, só o contorno da quadra).
+// Cartão de território pra imprimir: mapa com as quadras numeradas, com
+// zoom alto o bastante pra ler o nome das ruas direto no mapa de base.
 
 import { use, useEffect, useRef, useState } from 'react'
 import { useRouter } from 'next/navigation'
@@ -35,14 +34,14 @@ export default function CartaoTerritorioPage({ params }: { params: Promise<{ id:
     })
   }, [id, autorizado])
 
-  // Mapa estático (sem controles) só com as quadras deste território,
-  // cada uma marcada com o número que aparece na legenda de ruas abaixo.
+  // Mapa com zoom/arraste normais (o usuário pode ajustar antes de
+  // imprimir) só com as quadras deste território, cada uma numerada.
   useEffect(() => {
     if (carregando || !mapRef.current || mapInstanceRef.current) return
     const L = (window as any).L
     if (!L) return
 
-    const map = L.map(mapRef.current, { zoomControl: false, attributionControl: false, scrollWheelZoom: false })
+    const map = L.map(mapRef.current, { zoomControl: true, attributionControl: false })
     L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 20 }).addTo(map)
     mapInstanceRef.current = map
 
@@ -131,24 +130,10 @@ export default function CartaoTerritorioPage({ params }: { params: Promise<{ id:
 
           <div ref={mapRef} style={{ width: '100%', height: 760, border: '1px solid #DDD', borderRadius: 8, marginBottom: 24 }} />
 
-          {quadras.length === 0 ? (
+          {quadras.length === 0 && (
             <p style={{ textAlign: 'center', color: '#999', fontSize: 14 }}>
               Este território ainda não tem quadras agrupadas.
             </p>
-          ) : (
-            <div>
-              <h2 style={{ fontSize: 15, fontWeight: 700, marginBottom: 10, color: '#1A1A1A' }}>
-                Ruas <span style={{ fontWeight: 400, color: '#999' }}>— anote o nome de cada rua pelo número no mapa</span>
-              </h2>
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: '10px 32px' }}>
-                {quadras.map((q, i) => (
-                  <div key={q.id} style={{ display: 'flex', alignItems: 'flex-end', gap: 8, borderBottom: '1px solid #CCC', paddingBottom: 4 }}>
-                    <span style={{ fontWeight: 700, fontSize: 13, minWidth: 20, color: '#1A1A1A' }}>{i + 1}.</span>
-                    <span style={{ flex: 1, fontSize: 12, color: '#AAA' }}>&nbsp;</span>
-                  </div>
-                ))}
-              </div>
-            </div>
           )}
         </div>
       </div>
