@@ -96,6 +96,45 @@ export function transformarAnel(t: Transformacao, anelPdf: [number, number][]): 
   })
 }
 
+/** Desloca a transformação por um offset em metros (ajuste fino manual, depois do ajuste automático). */
+export function deslocarTransformacao(t: Transformacao, dLatMetros: number, dLngMetros: number, latReferencia: number): Transformacao {
+  const dLat = dLatMetros / METROS_POR_GRAU_LAT
+  const dLng = dLngMetros / metrosPorGrauLng(latReferencia)
+  return { ...t, c: t.c + dLat, f: t.f + dLng }
+}
+
+/**
+ * Gira a transformação por um ângulo (graus) ao redor de um pivô real
+ * (lat, lng) — ajuste fino manual. Reconstrói a,b,c,d,e,f girando 3 pontos
+ * de referência (origem e os dois eixos do espaço do PDF) em torno do
+ * pivô, num espaço local em metros (senão a rotação sairia distorcida,
+ * já que 1° de latitude e 1° de longitude não valem a mesma distância).
+ */
+export function girarTransformacao(t: Transformacao, anguloGraus: number, pivot: [number, number]): Transformacao {
+  const [pivLat, pivLng] = pivot
+  const mLng = metrosPorGrauLng(pivLat)
+  const rad = (anguloGraus * Math.PI) / 180
+  const cos = Math.cos(rad)
+  const sin = Math.sin(rad)
+
+  function girarPonto([lat, lng]: [number, number]): [number, number] {
+    const xm = (lng - pivLng) * mLng
+    const ym = (lat - pivLat) * METROS_POR_GRAU_LAT
+    const xm2 = xm * cos - ym * sin
+    const ym2 = xm * sin + ym * cos
+    return [pivLat + ym2 / METROS_POR_GRAU_LAT, pivLng + xm2 / mLng]
+  }
+
+  const p0 = girarPonto(aplicarTransformacao(t, [0, 0]))
+  const px = girarPonto(aplicarTransformacao(t, [1, 0]))
+  const py = girarPonto(aplicarTransformacao(t, [0, 1]))
+  return {
+    a: px[0] - p0[0], d: px[1] - p0[1],
+    b: py[0] - p0[0], e: py[1] - p0[1],
+    c: p0[0], f: p0[1],
+  }
+}
+
 const METROS_POR_GRAU_LAT = 111_320
 
 function metrosPorGrauLng(latReferencia: number): number {

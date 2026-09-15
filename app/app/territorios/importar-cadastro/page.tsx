@@ -16,7 +16,7 @@ import { usePaginaRestrita } from '@/lib/permissoes'
 import { Carregando, SemPermissao } from '@/components/EstadoPagina'
 import { nomeDaQuadra, proximaSequencia } from '@/lib/quadras'
 import {
-  ajustarTransformacao, erroMedioMetros, transformarAnel,
+  ajustarTransformacao, deslocarTransformacao, erroMedioMetros, girarTransformacao, transformarAnel,
   type PontoControle, type Transformacao,
 } from '@/lib/calibracaoPdf'
 import { areaEmMetros, centroDoContorno } from '@/lib/territorio'
@@ -96,6 +96,11 @@ const VERDE = '#3BAD68'
 const CINZA = '#9E9E9E'
 const PREFIXO_NOME = 'PDF'
 
+const estiloBotaoSeta: React.CSSProperties = {
+  width: 26, height: 26, fontSize: 14, fontWeight: 700, lineHeight: '26px', padding: 0,
+  background: '#fff', color: '#444', border: '1px solid #DDD', borderRadius: 6, cursor: 'pointer',
+}
+
 function estiloDaPrevia(selecionada: boolean) {
   return {
     color: selecionada ? VERDE : CINZA,
@@ -129,6 +134,9 @@ export default function ImportarCadastroPage() {
   const imgRef = useRef<HTMLImageElement>(null)
 
   const [transformacao, setTransformacao] = useState<Transformacao | null>(null)
+  const transformacaoBaseRef = useRef<Transformacao | null>(null)
+  const [passoAjusteM, setPassoAjusteM] = useState(5)
+  const bordasAjustadasRef = useRef(false)
   const [selecionadas, setSelecionadas] = useState<Set<number>>(new Set())
   const [gravando, setGravando] = useState<{ atual: number; total: number } | null>(null)
   const [totalGravado, setTotalGravado] = useState(0)
@@ -358,6 +366,8 @@ export default function ImportarCadastroPage() {
   function confirmarCalibracao() {
     try {
       const t = ajustarTransformacao(pontos)
+      transformacaoBaseRef.current = t
+      bordasAjustadasRef.current = false
       setTransformacao(t)
       setSelecionadas(new Set(dados?.quadras.map((_, i) => i) ?? []))
       setEtapa('revisao')
@@ -365,6 +375,29 @@ export default function ImportarCadastroPage() {
       setErroMsg(erro instanceof Error ? erro.message : 'Não deu pra calibrar com esses pontos.')
       setEtapa('erro')
     }
+  }
+
+  // ── Ajuste fino manual: nudge (metros) e rotação, em cima do que a
+  // calibração automática já achou — pra afinar quando fica quase certo.
+  function ajustarPosicao(dLatM: number, dLngM: number) {
+    setTransformacao((t) => {
+      if (!t) return t
+      const latRef = mapInstanceRef.current?.getCenter()?.lat ?? t.c
+      return deslocarTransformacao(t, dLatM, dLngM, latRef)
+    })
+  }
+
+  function ajustarRotacao(anguloGraus: number) {
+    setTransformacao((t) => {
+      if (!t) return t
+      const centro = mapInstanceRef.current?.getCenter()
+      const pivot: [number, number] = centro ? [centro.lat, centro.lng] : [t.c, t.f]
+      return girarTransformacao(t, anguloGraus, pivot)
+    })
+  }
+
+  function resetarAjusteFino() {
+    if (transformacaoBaseRef.current) setTransformacao({ ...transformacaoBaseRef.current })
   }
 
   // ── Passo 2: revisão no mapa ─────────────────────────────────────────────────
@@ -399,8 +432,14 @@ export default function ImportarCadastroPage() {
       return camada
     })
     previewRef.current = camadas
-    const grupo = L.featureGroup(camadas)
-    if (camadas.length > 0) map.fitBounds(grupo.getBounds(), { padding: [24, 24] })
+    // Só enquadra automaticamente da primeira vez — depois disso o usuário
+    // pode ter dado zoom/pan pra conferir um ponto específico, e cada nudge
+    // do ajuste fino não pode ficar chutando a view de volta.
+    if (camadas.length > 0 && !bordasAjustadasRef.current) {
+      const grupo = L.featureGroup(camadas)
+      map.fitBounds(grupo.getBounds(), { padding: [24, 24] })
+      bordasAjustadasRef.current = true
+    }
 
     return () => limparPreview()
   }, [etapa, dados, transformacao, limparPreview])
@@ -603,21 +642,56 @@ export default function ImportarCadastroPage() {
           )}
 
           {etapa === 'revisao' && (
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 10 }}>
-              <span style={{ fontSize: 14, color: '#444' }}>
-                {selecionadas.size} de {dados.quadras.length} marcadas para gravar (sem território — clique numa quadra no mapa pra desmarcar as que saíram tortas)
-              </span>
-              <div style={{ display: 'flex', gap: 8 }}>
-                <button onClick={() => setEtapa('calibrando')} style={{ padding: '12px 16px', fontSize: 14, fontWeight: 500, background: '#F7F7F7', color: '#555', border: '0.5px solid #DDD', borderRadius: 10, cursor: 'pointer' }}>← Recalibrar</button>
-                <button onClick={() => void gravar()} disabled={selecionadas.size === 0} style={{
-                  padding: '12px 20px', fontSize: 14, fontWeight: 600,
-                  background: selecionadas.size === 0 ? '#CCCCCC' : VERDE, color: '#fff',
-                  border: 'none', borderRadius: 10, cursor: selecionadas.size === 0 ? 'not-allowed' : 'pointer',
-                }}>
-                  ✅ Gravar {selecionadas.size} quadra{selecionadas.size !== 1 ? 's' : ''}
+            <>
+              <div style={{ background: '#FAFAFA', border: '1px solid #EEE', borderRadius: 10, padding: '10px 14px', display: 'flex', alignItems: 'center', gap: 14, flexWrap: 'wrap' }}>
+                <strong style={{ fontSize: 13, color: '#444' }}>🎯 Ajuste fino</strong>
+
+                <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 26px)', gridTemplateRows: 'repeat(3, 26px)', gap: 2 }}>
+                    <span />
+                    <button onClick={() => ajustarPosicao(passoAjusteM, 0)} title="Mover pra cima" style={estiloBotaoSeta}>↑</button>
+                    <span />
+                    <button onClick={() => ajustarPosicao(0, -passoAjusteM)} title="Mover pra esquerda" style={estiloBotaoSeta}>←</button>
+                    <span />
+                    <button onClick={() => ajustarPosicao(0, passoAjusteM)} title="Mover pra direita" style={estiloBotaoSeta}>→</button>
+                    <span />
+                    <button onClick={() => ajustarPosicao(-passoAjusteM, 0)} title="Mover pra baixo" style={estiloBotaoSeta}>↓</button>
+                    <span />
+                  </div>
+                  <select value={passoAjusteM} onChange={(e) => setPassoAjusteM(Number(e.target.value))}
+                    style={{ fontSize: 12, padding: '4px 6px', borderRadius: 6, border: '1px solid #DDD', background: '#fff' }}>
+                    <option value={1}>1 m</option>
+                    <option value={5}>5 m</option>
+                    <option value={20}>20 m</option>
+                  </select>
+                </div>
+
+                <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                  <button onClick={() => ajustarRotacao(-1)} title="Girar anti-horário" style={estiloBotaoSeta}>⟲</button>
+                  <button onClick={() => ajustarRotacao(1)} title="Girar horário" style={estiloBotaoSeta}>⟳</button>
+                </div>
+
+                <button onClick={resetarAjusteFino} style={{ fontSize: 12, color: '#E05050', background: 'none', border: 'none', cursor: 'pointer', textDecoration: 'underline' }}>
+                  ↺ Desfazer ajuste fino
                 </button>
               </div>
-            </div>
+
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 10 }}>
+                <span style={{ fontSize: 14, color: '#444' }}>
+                  {selecionadas.size} de {dados.quadras.length} marcadas para gravar (sem território — clique numa quadra no mapa pra desmarcar as que saíram tortas)
+                </span>
+                <div style={{ display: 'flex', gap: 8 }}>
+                  <button onClick={() => setEtapa('calibrando')} style={{ padding: '12px 16px', fontSize: 14, fontWeight: 500, background: '#F7F7F7', color: '#555', border: '0.5px solid #DDD', borderRadius: 10, cursor: 'pointer' }}>← Recalibrar</button>
+                  <button onClick={() => void gravar()} disabled={selecionadas.size === 0} style={{
+                    padding: '12px 20px', fontSize: 14, fontWeight: 600,
+                    background: selecionadas.size === 0 ? '#CCCCCC' : VERDE, color: '#fff',
+                    border: 'none', borderRadius: 10, cursor: selecionadas.size === 0 ? 'not-allowed' : 'pointer',
+                  }}>
+                    ✅ Gravar {selecionadas.size} quadra{selecionadas.size !== 1 ? 's' : ''}
+                  </button>
+                </div>
+              </div>
+            </>
           )}
 
           {etapa === 'gravando' && (
