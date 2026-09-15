@@ -557,8 +557,8 @@ export default function ImportarCadastroPage() {
                     −
                   </button>
                   <span style={{ fontSize: 12, color: '#666', alignSelf: 'center', minWidth: 34, textAlign: 'center' }}>{Math.round(zoomPdf * 100)}%</span>
-                  <button onClick={() => setZoomPdf((z) => Math.min(5, +(z + 0.5).toFixed(1)))} disabled={zoomPdf >= 5}
-                    style={{ width: 28, height: 28, fontSize: 16, fontWeight: 700, background: 'none', border: 'none', cursor: zoomPdf >= 5 ? 'not-allowed' : 'pointer', color: zoomPdf >= 5 ? '#CCC' : '#444' }}>
+                  <button onClick={() => setZoomPdf((z) => Math.min(7, +(z + 0.5).toFixed(1)))} disabled={zoomPdf >= 7}
+                    style={{ width: 28, height: 28, fontSize: 16, fontWeight: 700, background: 'none', border: 'none', cursor: zoomPdf >= 7 ? 'not-allowed' : 'pointer', color: zoomPdf >= 7 ? '#CCC' : '#444' }}>
                     +
                   </button>
                 </div>
