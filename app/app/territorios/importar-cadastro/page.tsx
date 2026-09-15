@@ -117,6 +117,7 @@ export default function ImportarCadastroPage() {
 
   const [etapa, setEtapa] = useState<Etapa>('carregando')
   const [verExtracao, setVerExtracao] = useState(false)
+  const [zoomPdf, setZoomPdf] = useState(1)
   const [erroMsg, setErroMsg] = useState('')
   const [dados, setDados] = useState<DadosCadastro | null>(null)
   const [imagemInfo, setImagemInfo] = useState<ImagemInfo | null>(null)
@@ -507,7 +508,23 @@ export default function ImportarCadastroPage() {
           <div style={{ display: 'grid', gridTemplateColumns: etapa === 'calibrando' ? '1fr 1fr' : '1fr', gap: 12 }}>
             {etapa === 'calibrando' && (
               <div style={{ position: 'relative', border: '1px solid #DDD', borderRadius: 10, overflow: 'hidden', height: 480 }}>
+                <div style={{
+                  position: 'absolute', top: 8, right: 8, zIndex: 10,
+                  display: 'flex', gap: 4, background: '#fff', border: '1px solid #DDD', borderRadius: 8,
+                  boxShadow: '0 1px 4px rgba(0,0,0,0.15)', padding: 4,
+                }}>
+                  <button onClick={() => setZoomPdf((z) => Math.max(1, +(z - 0.5).toFixed(1)))} disabled={zoomPdf <= 1}
+                    style={{ width: 28, height: 28, fontSize: 16, fontWeight: 700, background: 'none', border: 'none', cursor: zoomPdf <= 1 ? 'not-allowed' : 'pointer', color: zoomPdf <= 1 ? '#CCC' : '#444' }}>
+                    −
+                  </button>
+                  <span style={{ fontSize: 12, color: '#666', alignSelf: 'center', minWidth: 34, textAlign: 'center' }}>{Math.round(zoomPdf * 100)}%</span>
+                  <button onClick={() => setZoomPdf((z) => Math.min(5, +(z + 0.5).toFixed(1)))} disabled={zoomPdf >= 5}
+                    style={{ width: 28, height: 28, fontSize: 16, fontWeight: 700, background: 'none', border: 'none', cursor: zoomPdf >= 5 ? 'not-allowed' : 'pointer', color: zoomPdf >= 5 ? '#CCC' : '#444' }}>
+                    +
+                  </button>
+                </div>
                 <div style={{ position: 'absolute', inset: 0, overflow: 'auto' }}>
+                <div style={{ position: 'relative', width: `${zoomPdf * 100}%` }}>
                   <img ref={imgRef} src="/cadastro-2015/mapa.png" alt="Recorte do PDF da prefeitura" onClick={cliqueNaImagem}
                     style={{ display: 'block', width: '100%', cursor: 'crosshair' }} />
                   {verExtracao && (
@@ -525,17 +542,6 @@ export default function ImportarCadastroPage() {
                           vectorEffect="non-scaling-stroke"
                         />
                       ))}
-                      {dados.bairros.map((b, i) => {
-                        const [fx, fy] = fracaoNaImagem(b.centroPdf)
-                        return (
-                          <g key={i}>
-                            <circle cx={fx * 100} cy={fy * 100} r={4} fill="#E05050" vectorEffect="non-scaling-stroke" />
-                            <text x={fx * 100} y={fy * 100 - 6} fontSize={12} fill="#E05050" textAnchor="middle" style={{ paintOrder: 'stroke', stroke: '#fff', strokeWidth: 3 }}>
-                              {b.nome}
-                            </text>
-                          </g>
-                        )
-                      })}
                     </svg>
                   )}
                   {pontos.map((p, i) => {
@@ -558,6 +564,7 @@ export default function ImportarCadastroPage() {
                       background: '#F0A030', border: '2px solid #fff', boxShadow: '0 1px 4px rgba(0,0,0,0.4)', pointerEvents: 'none',
                     }} />
                   )}
+                </div>
                 </div>
               </div>
             )}
