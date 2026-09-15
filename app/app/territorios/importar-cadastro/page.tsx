@@ -116,6 +116,7 @@ export default function ImportarCadastroPage() {
   const previewRef = useRef<any[]>([])
 
   const [etapa, setEtapa] = useState<Etapa>('carregando')
+  const [verExtracao, setVerExtracao] = useState(false)
   const [erroMsg, setErroMsg] = useState('')
   const [dados, setDados] = useState<DadosCadastro | null>(null)
   const [imagemInfo, setImagemInfo] = useState<ImagemInfo | null>(null)
@@ -494,6 +495,12 @@ export default function ImportarCadastroPage() {
                   </span>
                 </div>
               )}
+              <div style={{ marginTop: 10 }}>
+                <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 12, color: '#042C53', cursor: 'pointer' }}>
+                  <input type="checkbox" checked={verExtracao} onChange={(e) => setVerExtracao(e.target.checked)} />
+                  👁️ Ver o que foi extraído do PDF ({dados.quadras.length} quadra{dados.quadras.length !== 1 ? 's' : ''}, {dados.bairros.length} bairro{dados.bairros.length !== 1 ? 's' : ''}) — sem depender da calibração
+                </label>
+              </div>
             </div>
           )}
 
@@ -503,6 +510,34 @@ export default function ImportarCadastroPage() {
                 <div style={{ position: 'absolute', inset: 0, overflow: 'auto' }}>
                   <img ref={imgRef} src="/cadastro-2015/mapa.png" alt="Recorte do PDF da prefeitura" onClick={cliqueNaImagem}
                     style={{ display: 'block', width: '100%', cursor: 'crosshair' }} />
+                  {verExtracao && (
+                    <svg viewBox="0 0 100 100" preserveAspectRatio="none" style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', pointerEvents: 'none' }}>
+                      {dados.quadras.map((q, i) => (
+                        <polygon
+                          key={i}
+                          points={q.anelPdf.map((p) => {
+                            const [fx, fy] = fracaoNaImagem(p)
+                            return `${(fx * 100).toFixed(3)},${(fy * 100).toFixed(3)}`
+                          }).join(' ')}
+                          fill="rgba(59,173,104,0.15)"
+                          stroke="#3BAD68"
+                          strokeWidth={1}
+                          vectorEffect="non-scaling-stroke"
+                        />
+                      ))}
+                      {dados.bairros.map((b, i) => {
+                        const [fx, fy] = fracaoNaImagem(b.centroPdf)
+                        return (
+                          <g key={i}>
+                            <circle cx={fx * 100} cy={fy * 100} r={4} fill="#E05050" vectorEffect="non-scaling-stroke" />
+                            <text x={fx * 100} y={fy * 100 - 6} fontSize={12} fill="#E05050" textAnchor="middle" style={{ paintOrder: 'stroke', stroke: '#fff', strokeWidth: 3 }}>
+                              {b.nome}
+                            </text>
+                          </g>
+                        )
+                      })}
+                    </svg>
+                  )}
                   {pontos.map((p, i) => {
                     const [fx, fy] = fracaoNaImagem(p.pdf)
                     return (
