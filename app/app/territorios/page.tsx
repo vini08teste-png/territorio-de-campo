@@ -1,13 +1,14 @@
 'use client'
 
 import { useEffect, useState } from 'react'
+import Link from 'next/link'
 import { supabase, CORES_STATUS, type Territorio, type Quadra } from '@/lib/supabase'
 import { usePaginaRestrita } from '@/lib/permissoes'
 import { Carregando, SemPermissao } from '@/components/EstadoPagina'
 import { calcularPrazoTerritorio, formatarPrazo } from '@/lib/prazoTerritorio'
 import {
-  formatarNumeroTerritorio, inteiroOuNulo, lerTerritoriosDoGeoJSON, linkComoChegar,
-  resumoPublicadoresFamilias, textoOuNulo, type TerritorioImportado,
+  formatarNumeroTerritorio, lerTerritoriosDoGeoJSON, linkComoChegar,
+  textoOuNulo, type TerritorioImportado,
 } from '@/lib/territorio'
 
 interface DesignacaoSG {
@@ -21,18 +22,22 @@ interface PontoIdioma {
   qtd_pessoas: number | null
 }
 
-const FORM_VAZIO = { nome: '', numero: '', bairro: '', publicadores: '', familias: '', link_maps: '' }
+// Sentinela pra abrir/fechar a lista de quadras sem território no mesmo
+// acordeão de "expandido" usado pelos cards de território (ids são uuids,
+// nunca colidem com essa string)
+const SEM_TERRITORIO = 'sem-territorio'
+
+const FORM_VAZIO = { nome: '', numero: '', bairro: '', link_maps: '', congregacao: '' }
 type FormTerritorio = typeof FORM_VAZIO
-type CampoExtra = 'publicadores' | 'familias' | 'link_maps'
+type CampoExtra = 'link_maps' | 'congregacao'
 
 function camposDoFormulario(form: FormTerritorio) {
   return {
     nome: form.nome,
     numero: form.numero,
     bairro: form.bairro,
-    publicadores: inteiroOuNulo(form.publicadores),
-    familias: inteiroOuNulo(form.familias),
     link_maps: textoOuNulo(form.link_maps),
+    congregacao: textoOuNulo(form.congregacao),
   }
 }
 
@@ -46,17 +51,14 @@ function formularioDoTerritorio(t: Territorio): FormTerritorio {
     nome: t.nome,
     numero: t.numero,
     bairro: valorDoCampo(t.bairro),
-    publicadores: valorDoCampo(t.publicadores),
-    familias: valorDoCampo(t.familias),
     link_maps: valorDoCampo(t.link_maps),
+    congregacao: valorDoCampo(t.congregacao),
   }
 }
 
 // Só sobrescreve o que veio preenchido no arquivo
 function camposDaImportacao(item: TerritorioImportado) {
   const campos: Record<string, unknown> = { geojson: item.geojson }
-  if (item.publicadores !== null) campos.publicadores = item.publicadores
-  if (item.familias !== null) campos.familias = item.familias
   if (item.link_maps !== null) campos.link_maps = item.link_maps
   return campos
 }
@@ -153,7 +155,7 @@ export default function TerritoriosPage() {
   }
 
   // Importa o territorios.geojson do editor: associa pelo número, atualiza o
-  // contorno (e publicadores/famílias/link, se vierem) e cria os que faltam.
+  // contorno (e o link, se vier) e cria os que faltam.
   async function importarContornos(e: React.ChangeEvent<HTMLInputElement>) {
     const arquivo = e.target.files?.[0]
     e.target.value = ''
@@ -217,7 +219,7 @@ export default function TerritoriosPage() {
   // ── Quadra ───────────────────────────────────────────────────────────────────
   function abrirEdicaoQuadra(q: Quadra) {
     setEditandoQuadra(q)
-    setFormQuadra({ nome: q.nome, territorio_id: q.territorio_id })
+    setFormQuadra({ nome: q.nome, territorio_id: q.territorio_id ?? '' })
   }
 
   async function salvarEdicaoQuadra(e: React.FormEvent) {
@@ -268,6 +270,9 @@ export default function TerritoriosPage() {
   if (verificandoAcesso) return <Carregando />
   if (!autorizado) return <SemPermissao />
 
+  const quadrasSemTerritorio = quadras.filter((q) => !q.territorio_id)
+  const semTerritorioAberto = expandido === SEM_TERRITORIO
+
   let textoImportar = '📥 Importar contornos'
   if (importando) textoImportar = 'Importando…'
 
@@ -277,6 +282,14 @@ export default function TerritoriosPage() {
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginBottom: 24 }}>
         <h1 style={{ fontSize: 24, fontWeight: 700, color: '#1A1A1A', margin: 0 }}>Territórios</h1>
         <div style={{ display: 'flex', gap: 8 }}>
+        <Link href="/app/territorios/importar-cadastro" title="Calibrar e importar as quadras do mapa oficial da prefeitura (PDF)" style={{
+          padding: '10px 14px', fontSize: 14, fontWeight: 600,
+          background: '#F7F7F7', color: '#1A1A1A',
+          border: '0.5px solid #DDD', borderRadius: 10, cursor: 'pointer',
+          textDecoration: 'none', display: 'inline-flex', alignItems: 'center',
+        }}>
+          📐 Importar do PDF
+        </Link>
         <label title="Arquivo territorios.geojson gerado pelo editor de territórios" style={{
           padding: '10px 14px', fontSize: 14, fontWeight: 600,
           background: '#F7F7F7', color: '#1A1A1A',
@@ -333,6 +346,57 @@ export default function TerritoriosPage() {
         </div>
       )}
 
+      {/* Quadras catalogadas sem território (geradas desenhando o perímetro da cidade) */}
+      {quadrasSemTerritorio.length > 0 && (
+        <div style={{ background: '#FFFFFF', border: '1.5px solid #F0C060', borderRadius: 12, overflow: 'hidden', marginBottom: 10 }}>
+          <div style={{ padding: '16px' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 12 }}>
+              <div>
+                <div style={{ fontSize: 16, fontWeight: 700, color: '#1A1A1A' }}>🏙️ Quadras sem território</div>
+                <div style={{ fontSize: 13, color: '#888', marginTop: 2 }}>
+                  Catalogadas pelo perímetro da cidade — atribua cada uma a um território.
+                </div>
+              </div>
+            </div>
+            <button onClick={() => setExpandido(semTerritorioAberto ? null : SEM_TERRITORIO)} style={{
+              width: '100%', padding: '8px', fontSize: 13, fontWeight: 500,
+              background: semTerritorioAberto ? '#F0F0F0' : '#F7F7F7', color: '#1A1A1A',
+              border: '0.5px solid #DDD', borderRadius: 8, cursor: 'pointer',
+            }}>
+              {semTerritorioAberto ? '▲ Fechar quadras' : `▼ Ver quadras (${quadrasSemTerritorio.length})`}
+            </button>
+          </div>
+
+          {semTerritorioAberto && (
+            <div style={{ borderTop: '0.5px solid #EEEEEE', background: '#FAFAFA' }}>
+              {quadrasSemTerritorio.map((q) => {
+                const c = CORES_STATUS[q.status] ?? CORES_STATUS['nao_iniciado']
+                return (
+                  <div key={q.id} style={{
+                    display: 'flex', alignItems: 'center', gap: 10,
+                    padding: '10px 16px', borderBottom: '0.5px solid #EEEEEE',
+                  }}>
+                    <span style={{ width: 10, height: 10, borderRadius: '50%', background: c.stroke, flexShrink: 0 }} />
+                    <span style={{ flex: 1, fontSize: 14, color: '#1A1A1A', fontWeight: 500 }}>{q.nome}</span>
+                    <span style={{ fontSize: 11, color: '#888', marginRight: 8 }}>{c.label}</span>
+                    <button onClick={() => abrirEdicaoQuadra(q)} style={{
+                      padding: '5px 10px', fontSize: 12, fontWeight: 600,
+                      background: '#E8F4FB', color: '#042C53',
+                      border: '0.5px solid #70B8E0', borderRadius: 6, cursor: 'pointer',
+                    }}>Atribuir a um território</button>
+                    <button onClick={() => void excluirQuadra(q)} style={{
+                      padding: '5px 10px', fontSize: 12, fontWeight: 500,
+                      background: '#FFF0F0', color: '#E05050',
+                      border: '1px solid #FFCCCC', borderRadius: 6, cursor: 'pointer',
+                    }}>🗑️</button>
+                  </div>
+                )
+              })}
+            </div>
+          )}
+        </div>
+      )}
+
       {/* Lista territórios */}
       <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
         {territorios.map((t) => {
@@ -343,7 +407,6 @@ export default function TerritoriosPage() {
           const designacao = designacoesSG.find((d) => d.territorio_id === t.id)
           const prazo = designacao ? calcularPrazoTerritorio(designacao.data_inicio, prazoDias) : null
           const rota = linkComoChegar(t)
-          const resumo = resumoPublicadoresFamilias(t)
           const idiomaTerr = idiomaPorTerritorio(t.id)
 
           return (
@@ -354,7 +417,9 @@ export default function TerritoriosPage() {
                   <div style={{ flex: 1 }}>
                     <div style={{ fontSize: 16, fontWeight: 700, color: '#1A1A1A' }}>#{t.numero} — {t.nome}</div>
                     <div style={{ fontSize: 13, color: '#888', marginTop: 2 }}>{t.bairro}</div>
-                    {resumo && <div style={{ fontSize: 13, color: '#555', marginTop: 2 }}>{resumo}</div>}
+                    {t.congregacao && (
+                      <div style={{ fontSize: 12, color: '#6B3FD4', marginTop: 2, fontWeight: 600 }}>🏛️ {t.congregacao}</div>
+                    )}
                     {!t.geojson && (
                       <div style={{ fontSize: 12, color: '#B07A00', marginTop: 2 }}>Sem contorno no mapa</div>
                     )}
@@ -409,6 +474,11 @@ export default function TerritoriosPage() {
                       border: '0.5px solid #70B8E0', borderRadius: 8,
                     }}>🧭 Como chegar</a>
                   )}
+                  <Link href={`/app/territorios/${t.id}/cartao`} title="Cartão do território pra imprimir" style={{
+                    padding: '8px 14px', fontSize: 13, fontWeight: 600,
+                    background: '#F0EAFF', color: '#6B3FD4', textDecoration: 'none',
+                    border: '0.5px solid #D9C6FF', borderRadius: 8,
+                  }}>🖨️ Cartão</Link>
                   <button onClick={() => { setEditandoTerr(t); setFormEdit(formularioDoTerritorio(t)) }} style={{
                     padding: '8px 14px', fontSize: 13, fontWeight: 500,
                     background: '#F7F7F7', color: '#1A1A1A',
@@ -543,7 +613,7 @@ export default function TerritoriosPage() {
   )
 }
 
-// Publicadores, famílias e link do QR code (legenda do mapa geral e cartão S-12-T)
+// Link do QR code (legenda do mapa geral e cartão S-12-T) e congregação
 function CamposExtras({ valores, alterar }: {
   valores: FormTerritorio
   alterar: (campo: CampoExtra, valor: string) => void
@@ -555,22 +625,18 @@ function CamposExtras({ valores, alterar }: {
   }
   return (
     <>
-      <div style={{ display: 'flex', gap: 12 }}>
-        <div style={{ flex: 1 }}>
-          <label style={estiloRotulo}>Publicadores</label>
-          <input type="number" min={0} value={valores.publicadores}
-            onChange={(e) => alterar('publicadores', e.target.value)} style={estiloCampo} />
-        </div>
-        <div style={{ flex: 1 }}>
-          <label style={estiloRotulo}>Famílias</label>
-          <input type="number" min={0} value={valores.familias}
-            onChange={(e) => alterar('familias', e.target.value)} style={estiloCampo} />
-        </div>
-      </div>
       <div>
         <label style={estiloRotulo}>Link do Google Maps (QR code do cartão)</label>
         <input type="url" value={valores.link_maps} placeholder="https://goo.gl/maps/…"
           onChange={(e) => alterar('link_maps', e.target.value)} style={estiloCampo} />
+      </div>
+      <div>
+        <label style={estiloRotulo}>Congregação</label>
+        <input value={valores.congregacao} placeholder="Ex: Central"
+          onChange={(e) => alterar('congregacao', e.target.value)} style={estiloCampo} />
+        <p style={{ fontSize: 12, color: '#999', margin: '6px 0 0' }}>
+          Só quem é dessa congregação (e o admin) enxerga este território.
+        </p>
       </div>
     </>
   )

@@ -1,6 +1,7 @@
 'use client'
 
 import { useEffect, useState, useCallback } from 'react'
+import { useRouter } from 'next/navigation'
 import { supabase, CORES_PERFIL } from '@/lib/supabase'
 import { getUsuarioAtual } from '@/lib/auth'
 
@@ -22,23 +23,24 @@ interface Territorio {
   status: string
 }
 
-interface Quadra {
-  id: string
-  nome: string
-  status: string
-  territorio_id: string
-}
-
 interface Designacao {
   id: string
   usuario_id: string
   territorio_id: string | null
-  quadra_id: string | null
   data_inicio: string
   data_fim: string | null
   usuario?: Usuario
   territorio?: Territorio
-  quadra?: Quadra
+}
+
+interface MembroGrupo {
+  id: string
+  dirigente_id: string
+  sg_id: string
+  data_inicio: string
+  data_fim: string | null
+  dirigente?: Usuario
+  sg?: Usuario
 }
 
 const LABEL_PERFIL: Record<string, string> = {
@@ -77,18 +79,19 @@ function BadgePerfil({ perfil }: { perfil: Perfil }) {
 }
 
 export default function DesignarPage() {
+  const router = useRouter()
   const [usuarioAtual, setUsuarioAtual] = useState<Usuario | null>(null)
   const [loading, setLoading] = useState(true)
   const [salvando, setSalvando] = useState(false)
   const [erro, setErro] = useState<string | null>(null)
   const [sucesso, setSucesso] = useState<string | null>(null)
   const [designacoes, setDesignacoes] = useState<Designacao[]>([])
+  const [membros, setMembros] = useState<MembroGrupo[]>([])
   const [territorios, setTerritorios] = useState<Territorio[]>([])
-  const [quadras, setQuadras] = useState<Quadra[]>([])
   const [sgsAtivos, setSgsAtivos] = useState<Usuario[]>([])
   const [dirigentesAtivos, setDirigentesAtivos] = useState<Usuario[]>([])
   const [formST, setFormST] = useState({ territorio_id: '', usuario_id: '' })
-  const [formSG, setFormSG] = useState({ quadra_id: '', usuario_id: '' })
+  const [formGrupo, setFormGrupo] = useState({ sg_id: '', dirigente_id: '' })
 
   function mostrarSucesso(msg: string) {
     setSucesso(msg)
@@ -100,38 +103,45 @@ export default function DesignarPage() {
   }
 
   // Toda a hierarquia herda o que quem está abaixo pode fazer:
-  // admin e ST também designam dirigentes; admin também designa SGs.
+  // admin e ST também designam SG a território e dirigente a grupo.
   const isAdmin = usuarioAtual?.perfil === 'admin'
   const isST = usuarioAtual?.perfil === 'superintendente_territorio'
   const isSG = usuarioAtual?.perfil === 'superintendente_grupo'
   const podeDesignarSG = isST || isAdmin
-  const podeDesignarDirigente = isSG || isST || isAdmin
+  const podeAdicionarMembro = isSG || isST || isAdmin
 
-  // ── recarregarDesignacoes declarado ANTES de carregar ──────────────────────
-  const recarregarDesignacoes = useCallback(async (
-    usuario: Usuario,
-    terrsDoSG: Territorio[]
-  ) => {
+  // ── Território(s) designado(s) ao SG: territorio_id preenchido ─────────────
+  const recarregarDesignacoes = useCallback(async (usuario: Usuario) => {
     let query = supabase
       .from('designacoes')
-      .select('*, usuario:usuario_id(*), territorio:territorio_id(*), quadra:quadra_id(*)')
+      .select('*, usuario:usuario_id(*), territorio:territorio_id(*)')
       .is('data_fim', null)
       .order('data_inicio', { ascending: false })
 
-    // Quem só é SG vê apenas as designações dos territórios dele.
-    // ST/admin enxergam tudo (SG↔território e dirigente↔quadra).
+    // SG só vê o(s) território(s) designado(s) a ele mesmo.
     if (usuario.perfil === 'superintendente_grupo') {
-      const terIds = terrsDoSG.map((t) => t.id)
-      if (terIds.length) {
-        query = query.in('territorio_id', terIds).not('quadra_id', 'is', null)
-      } else {
-        setDesignacoes([])
-        return
-      }
+      query = query.eq('usuario_id', usuario.id)
     }
 
     const { data } = await query
     setDesignacoes((data as Designacao[]) ?? [])
+  }, [])
+
+  // ── Dirigentes membros do grupo de um SG ────────────────────────────────────
+  const recarregarMembros = useCallback(async (usuario: Usuario) => {
+    let query = supabase
+      .from('membros_grupo')
+      .select('*, dirigente:dirigente_id(*), sg:sg_id(*)')
+      .is('data_fim', null)
+      .order('data_inicio', { ascending: false })
+
+    // SG só vê os membros do próprio grupo.
+    if (usuario.perfil === 'superintendente_grupo') {
+      query = query.eq('sg_id', usuario.id)
+    }
+
+    const { data } = await query
+    setMembros((data as MembroGrupo[]) ?? [])
   }, [])
 
   const carregar = useCallback(async () => {
@@ -146,59 +156,25 @@ export default function DesignarPage() {
 
     const souAdmin = usuario.perfil === 'admin'
     const souST = usuario.perfil === 'superintendente_territorio'
-    const souSG = usuario.perfil === 'superintendente_grupo'
     const podeSG = souST || souAdmin
-    const podeDirigente = souSG || souST || souAdmin
 
-    // Territórios pro formulário ST→SG: todos, pra quem pode designar SG
-    let terrsParaFormST: Territorio[] = []
     if (podeSG) {
       const { data } = await supabase.from('territorios').select('*').order('numero')
-      terrsParaFormST = data ?? []
-    }
-    setTerritorios(terrsParaFormST)
+      setTerritorios(data ?? [])
 
-    // Territórios do SG (só usado pra filtrar quadras e a lista de designações dele)
-    let terrsDoSG: Territorio[] = []
-    if (souSG) {
-      const { data: desig } = await supabase
-        .from('designacoes').select('territorio_id')
-        .eq('usuario_id', usuario.id).is('quadra_id', null).is('data_fim', null)
-      const ids = (desig ?? []).map((d) => d.territorio_id).filter(Boolean)
-      if (ids.length) {
-        const { data } = await supabase.from('territorios').select('*').in('id', ids).order('numero')
-        terrsDoSG = data ?? []
-      }
-    }
-
-    // Quadras pro formulário SG→Dirigente: só do SG se for só SG; todas se for ST/admin
-    if (podeDirigente) {
-      if (souST || souAdmin) {
-        const { data } = await supabase.from('quadras').select('*').order('nome')
-        setQuadras(data ?? [])
-      } else if (terrsDoSG.length > 0) {
-        const terIds = terrsDoSG.map((t) => t.id)
-        const { data } = await supabase.from('quadras').select('*').in('territorio_id', terIds).order('nome')
-        setQuadras(data ?? [])
-      } else {
-        setQuadras([])
-      }
-    }
-
-    if (podeSG) {
-      const { data } = await supabase.from('usuarios').select('*')
+      const { data: sgs } = await supabase.from('usuarios').select('*')
         .eq('perfil', 'superintendente_grupo').eq('ativo', true).order('nome')
-      setSgsAtivos(data ?? [])
-    }
-    if (podeDirigente) {
-      const { data } = await supabase.from('usuarios').select('*')
-        .eq('perfil', 'dirigente').eq('ativo', true).order('nome')
-      setDirigentesAtivos(data ?? [])
+      setSgsAtivos(sgs ?? [])
     }
 
-    await recarregarDesignacoes(usuario, terrsDoSG)
+    const { data: dirigentes } = await supabase.from('usuarios').select('*')
+      .eq('perfil', 'dirigente').eq('ativo', true).order('nome')
+    setDirigentesAtivos(dirigentes ?? [])
+
+    await recarregarDesignacoes(usuario)
+    await recarregarMembros(usuario)
     setLoading(false)
-  }, [recarregarDesignacoes])
+  }, [recarregarDesignacoes, recarregarMembros])
 
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect
@@ -211,7 +187,7 @@ export default function DesignarPage() {
       return
     }
     const { data: existente } = await supabase.from('designacoes').select('id')
-      .eq('territorio_id', formST.territorio_id).is('quadra_id', null).is('data_fim', null)
+      .eq('territorio_id', formST.territorio_id).is('data_fim', null)
     if (existente && existente.length > 0) {
       mostrarErro('Este território já tem um Sup. de Grupo designado. Remova antes de designar outro.')
       return
@@ -220,7 +196,6 @@ export default function DesignarPage() {
     const { error } = await supabase.from('designacoes').insert({
       usuario_id: formST.usuario_id,
       territorio_id: formST.territorio_id,
-      quadra_id: null,
       data_inicio: new Date().toISOString(),
     })
     setSalvando(false)
@@ -230,51 +205,48 @@ export default function DesignarPage() {
     void carregar()
   }
 
-  async function designarDirigente() {
-    if (!formSG.quadra_id || !formSG.usuario_id) {
-      mostrarErro('Selecione a quadra e o dirigente.')
-      return
-    }
-    const quadra = quadras.find((q) => q.id === formSG.quadra_id)
-    if (!quadra) { mostrarErro('Quadra inválida.'); return }
-
-    const { data: existente } = await supabase.from('designacoes').select('id')
-      .eq('quadra_id', formSG.quadra_id).eq('usuario_id', formSG.usuario_id).is('data_fim', null)
-    if (existente && existente.length > 0) {
-      mostrarErro('Este dirigente já está designado para esta quadra.')
-      return
-    }
-
-    // Evita dois dirigentes cobrindo a mesma quadra ao mesmo tempo
-    const { data: outroDirigente } = await supabase.from('designacoes')
-      .select('id, usuario:usuario_id(nome)')
-      .eq('quadra_id', formSG.quadra_id).is('data_fim', null)
-    if (outroDirigente && outroDirigente.length > 0) {
-      const nomeOutro = (outroDirigente[0].usuario as unknown as { nome?: string } | null)?.nome ?? 'outro dirigente'
-      mostrarErro(`Esta quadra já está designada a ${nomeOutro}. Remova a designação antes de trocar.`)
-      return
-    }
-
-    setSalvando(true)
-    const { error } = await supabase.from('designacoes').insert({
-      usuario_id: formSG.usuario_id,
-      territorio_id: quadra.territorio_id,
-      quadra_id: formSG.quadra_id,
-      data_inicio: new Date().toISOString(),
-    })
-    setSalvando(false)
-    if (error) { mostrarErro('Erro ao salvar designação.'); return }
-    setFormSG({ quadra_id: '', usuario_id: '' })
-    mostrarSucesso('Dirigente designado com sucesso!')
-    void carregar()
-  }
-
   async function removerDesignacao(id: string, nome: string) {
     if (!confirm(`Remover a designação de "${nome}"?`)) return
     const { error } = await supabase.from('designacoes')
       .update({ data_fim: new Date().toISOString() }).eq('id', id)
     if (error) { mostrarErro('Erro ao remover designação.'); return }
     mostrarSucesso('Designação removida.')
+    void carregar()
+  }
+
+  async function adicionarMembro() {
+    const sgId = isSG ? usuarioAtual!.id : formGrupo.sg_id
+    if (!sgId || !formGrupo.dirigente_id) {
+      mostrarErro(isSG ? 'Selecione o dirigente.' : 'Selecione o Sup. de Grupo e o dirigente.')
+      return
+    }
+
+    const { data: existente } = await supabase.from('membros_grupo').select('id')
+      .eq('dirigente_id', formGrupo.dirigente_id).is('data_fim', null)
+    if (existente && existente.length > 0) {
+      mostrarErro('Este dirigente já está em um grupo. Remova-o do grupo atual antes de trocar.')
+      return
+    }
+
+    setSalvando(true)
+    const { error } = await supabase.from('membros_grupo').insert({
+      dirigente_id: formGrupo.dirigente_id,
+      sg_id: sgId,
+      data_inicio: new Date().toISOString(),
+    })
+    setSalvando(false)
+    if (error) { mostrarErro('Erro ao adicionar ao grupo.'); return }
+    setFormGrupo({ sg_id: '', dirigente_id: '' })
+    mostrarSucesso('Dirigente adicionado ao grupo!')
+    void carregar()
+  }
+
+  async function removerMembro(id: string, nome: string) {
+    if (!confirm(`Remover "${nome}" do grupo?`)) return
+    const { error } = await supabase.from('membros_grupo')
+      .update({ data_fim: new Date().toISOString() }).eq('id', id)
+    if (error) { mostrarErro('Erro ao remover do grupo.'); return }
+    mostrarSucesso('Removido do grupo.')
     void carregar()
   }
 
@@ -288,7 +260,7 @@ export default function DesignarPage() {
 
   if (!usuarioAtual) return null
 
-  if (!podeDesignarSG && !podeDesignarDirigente) {
+  if (!podeDesignarSG && !podeAdicionarMembro) {
     return (
       <div style={{ padding: '2rem', textAlign: 'center', color: '#666' }}>
         <p style={{ fontSize: 18 }}>Você não tem permissão para acessar esta página.</p>
@@ -302,11 +274,11 @@ export default function DesignarPage() {
       <div style={{ marginBottom: '2rem' }}>
         <h1 style={{ fontSize: 24, fontWeight: 700, color: '#1A1A1A', margin: 0 }}>Designações</h1>
         <p style={{ fontSize: 15, color: '#666', marginTop: 4 }}>
-          {podeDesignarSG && podeDesignarDirigente
-            ? 'Atribua Sup. de Grupo aos territórios e dirigentes às quadras'
+          {podeDesignarSG && podeAdicionarMembro
+            ? 'Atribua Sup. de Grupo aos territórios e dirigentes aos grupos'
             : podeDesignarSG
             ? 'Atribua Sup. de Grupo aos territórios'
-            : 'Atribua dirigentes às quadras do seu território'}
+            : 'Adicione dirigentes ao seu grupo'}
         </p>
       </div>
 
@@ -375,37 +347,35 @@ export default function DesignarPage() {
         </section>
       )}
 
-      {/* Formulário SG/ST/admin → Dirigente */}
-      {podeDesignarDirigente && (
+      {/* Formulário SG/ST/admin → adicionar dirigente ao grupo */}
+      {podeAdicionarMembro && (
         <section style={{ marginBottom: '2.5rem' }}>
           <div style={{ background: '#FFFFFF', border: '0.5px solid #EEEEEE', borderRadius: 12, padding: '1.25rem' }}>
             <h2 style={{ fontSize: 17, fontWeight: 600, color: '#1A1A1A', marginTop: 0, marginBottom: '1.25rem', display: 'flex', alignItems: 'center', gap: 8 }}>
-              👤 Designar Dirigente a Quadra
+              👥 Adicionar Dirigente ao Grupo
             </h2>
             <div style={{ display: 'grid', gap: '1rem' }}>
-              <div>
-                <label style={{ display: 'block', fontSize: 14, fontWeight: 500, color: '#444', marginBottom: 6 }}>Quadra</label>
-                {quadras.length === 0 ? (
-                  <p style={{ color: '#999', fontSize: 15, margin: 0 }}>Nenhuma quadra encontrada.</p>
-                ) : (
+              {!isSG && (
+                <div>
+                  <label style={{ display: 'block', fontSize: 14, fontWeight: 500, color: '#444', marginBottom: 6 }}>Sup. de Grupo</label>
                   <select
-                    value={formSG.quadra_id}
-                    onChange={(e) => setFormSG((f) => ({ ...f, quadra_id: e.target.value }))}
+                    value={formGrupo.sg_id}
+                    onChange={(e) => setFormGrupo((f) => ({ ...f, sg_id: e.target.value }))}
                     style={{ width: '100%', padding: '12px 14px', fontSize: 16, border: '1px solid #DDDDDD', borderRadius: 8, background: '#FAFAFA', color: '#1A1A1A' }}
                   >
-                    <option value="">— Selecione uma quadra —</option>
-                    {quadras.map((q) => <option key={q.id} value={q.id}>{q.nome}</option>)}
+                    <option value="">— Selecione o Sup. de Grupo —</option>
+                    {sgsAtivos.map((u) => <option key={u.id} value={u.id}>{u.nome}</option>)}
                   </select>
-                )}
-              </div>
+                </div>
+              )}
               <div>
                 <label style={{ display: 'block', fontSize: 14, fontWeight: 500, color: '#444', marginBottom: 6 }}>Dirigente</label>
                 {dirigentesAtivos.length === 0 ? (
                   <p style={{ color: '#999', fontSize: 15, margin: 0 }}>Nenhum dirigente ativo cadastrado.</p>
                 ) : (
                   <select
-                    value={formSG.usuario_id}
-                    onChange={(e) => setFormSG((f) => ({ ...f, usuario_id: e.target.value }))}
+                    value={formGrupo.dirigente_id}
+                    onChange={(e) => setFormGrupo((f) => ({ ...f, dirigente_id: e.target.value }))}
                     style={{ width: '100%', padding: '12px 14px', fontSize: 16, border: '1px solid #DDDDDD', borderRadius: 8, background: '#FAFAFA', color: '#1A1A1A' }}
                   >
                     <option value="">— Selecione o dirigente —</option>
@@ -414,26 +384,26 @@ export default function DesignarPage() {
                 )}
               </div>
               <button
-                onClick={() => void designarDirigente()}
-                disabled={salvando || quadras.length === 0 || dirigentesAtivos.length === 0}
+                onClick={() => void adicionarMembro()}
+                disabled={salvando || dirigentesAtivos.length === 0}
                 style={{
                   width: '100%', padding: '16px', fontSize: 17, fontWeight: 600,
-                  background: (salvando || quadras.length === 0 || dirigentesAtivos.length === 0) ? '#CCCCCC' : '#378ADD',
+                  background: (salvando || dirigentesAtivos.length === 0) ? '#CCCCCC' : '#378ADD',
                   color: '#FFFFFF', border: 'none', borderRadius: 10,
-                  cursor: (salvando || quadras.length === 0 || dirigentesAtivos.length === 0) ? 'not-allowed' : 'pointer', minHeight: 64,
+                  cursor: (salvando || dirigentesAtivos.length === 0) ? 'not-allowed' : 'pointer', minHeight: 64,
                 }}
               >
-                {salvando ? 'Salvando…' : '✅ Confirmar Designação'}
+                {salvando ? 'Salvando…' : '✅ Adicionar ao Grupo'}
               </button>
             </div>
           </div>
         </section>
       )}
 
-      {/* Lista de designações */}
-      <section>
+      {/* Lista de territórios designados */}
+      <section style={{ marginBottom: '2.5rem' }}>
         <h2 style={{ fontSize: 18, fontWeight: 600, color: '#1A1A1A', marginBottom: '1rem', display: 'flex', alignItems: 'center', gap: 8 }}>
-          📋 Designações ativas
+          🗺️ Territórios designados
           <span style={{ marginLeft: 'auto', fontSize: 13, background: '#F7F7F7', border: '1px solid #EEEEEE', borderRadius: 20, padding: '2px 10px', color: '#666' }}>
             {designacoes.length}
           </span>
@@ -441,16 +411,14 @@ export default function DesignarPage() {
 
         {designacoes.length === 0 ? (
           <div style={{ textAlign: 'center', padding: '2.5rem 1rem', background: '#F7F7F7', borderRadius: 12, border: '1px dashed #DDDDDD' }}>
-            <div style={{ fontSize: 40, marginBottom: 12 }}>📋</div>
-            <p style={{ fontSize: 16, color: '#666', margin: 0 }}>Nenhuma designação ativa ainda.</p>
+            <div style={{ fontSize: 40, marginBottom: 12 }}>🗺️</div>
+            <p style={{ fontSize: 16, color: '#666', margin: 0 }}>Nenhum território designado ainda.</p>
           </div>
         ) : (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
             {designacoes.map((d) => {
-              const usuario = d.usuario as Usuario | undefined
-              const territorio = d.territorio as Territorio | undefined
-              const quadra = d.quadra as Quadra | undefined
-              const ehTerritorio = d.quadra_id === null
+              const usuario = d.usuario
+              const territorio = d.territorio
               const dataInicio = d.data_inicio
                 ? new Date(d.data_inicio).toLocaleDateString('pt-BR', { day: '2-digit', month: 'short', year: 'numeric' })
                 : '—'
@@ -466,14 +434,79 @@ export default function DesignarPage() {
                       {usuario && <BadgePerfil perfil={usuario.perfil} />}
                     </div>
                     <div style={{ fontSize: 13, color: '#666', marginTop: 3 }}>
-                      {ehTerritorio
-                        ? territorio ? `🗺️ ${territorio.nome} — ${territorio.bairro}` : '—'
-                        : quadra ? `📍 ${quadra.nome}` : '—'}
+                      {territorio ? `${territorio.nome} — ${territorio.bairro}` : '—'}
                     </div>
                     <div style={{ fontSize: 12, color: '#AAAAAA', marginTop: 2 }}>Desde {dataInicio}</div>
                   </div>
+                  {territorio && (
+                    <button
+                      onClick={() => router.push(
+                        isST || isAdmin ? `/app/territorios?destaque=${territorio.id}` : '/app'
+                      )}
+                      style={{
+                        flexShrink: 0, background: 'transparent', border: '1px solid #EEEEEE',
+                        borderRadius: 8, padding: '8px 12px', fontSize: 13, color: '#378ADD', cursor: 'pointer',
+                      }}
+                    >
+                      🗺️ Ver território
+                    </button>
+                  )}
                   <button
                     onClick={() => void removerDesignacao(d.id, usuario?.nome ?? 'esta pessoa')}
+                    style={{
+                      flexShrink: 0, background: 'transparent', border: '1px solid #EEEEEE',
+                      borderRadius: 8, padding: '8px 12px', fontSize: 13, color: '#E05050', cursor: 'pointer',
+                    }}
+                  >
+                    🗑️ Remover
+                  </button>
+                </div>
+              )
+            })}
+          </div>
+        )}
+      </section>
+
+      {/* Lista de membros do grupo */}
+      <section>
+        <h2 style={{ fontSize: 18, fontWeight: 600, color: '#1A1A1A', marginBottom: '1rem', display: 'flex', alignItems: 'center', gap: 8 }}>
+          👥 Membros do grupo
+          <span style={{ marginLeft: 'auto', fontSize: 13, background: '#F7F7F7', border: '1px solid #EEEEEE', borderRadius: 20, padding: '2px 10px', color: '#666' }}>
+            {membros.length}
+          </span>
+        </h2>
+
+        {membros.length === 0 ? (
+          <div style={{ textAlign: 'center', padding: '2.5rem 1rem', background: '#F7F7F7', borderRadius: 12, border: '1px dashed #DDDDDD' }}>
+            <div style={{ fontSize: 40, marginBottom: 12 }}>👥</div>
+            <p style={{ fontSize: 16, color: '#666', margin: 0 }}>Nenhum dirigente no grupo ainda.</p>
+          </div>
+        ) : (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+            {membros.map((m) => {
+              const dirigente = m.dirigente
+              const sg = m.sg
+              const dataInicio = m.data_inicio
+                ? new Date(m.data_inicio).toLocaleDateString('pt-BR', { day: '2-digit', month: 'short', year: 'numeric' })
+                : '—'
+              return (
+                <div key={m.id} style={{
+                  background: '#FFFFFF', border: '0.5px solid #EEEEEE', borderRadius: 10,
+                  padding: '14px 16px', display: 'flex', alignItems: 'center', gap: 12,
+                }}>
+                  {dirigente && <Avatar nome={dirigente.nome} perfil={dirigente.perfil} />}
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                      <span style={{ fontSize: 15, fontWeight: 600, color: '#1A1A1A' }}>{dirigente?.nome ?? '—'}</span>
+                      <BadgePerfil perfil="dirigente" />
+                    </div>
+                    <div style={{ fontSize: 13, color: '#666', marginTop: 3 }}>
+                      {!isSG ? `Grupo de ${sg?.nome ?? '—'}` : `Desde ${dataInicio}`}
+                    </div>
+                    {!isSG && <div style={{ fontSize: 12, color: '#AAAAAA', marginTop: 2 }}>Desde {dataInicio}</div>}
+                  </div>
+                  <button
+                    onClick={() => void removerMembro(m.id, dirigente?.nome ?? 'este dirigente')}
                     style={{
                       flexShrink: 0, background: 'transparent', border: '1px solid #EEEEEE',
                       borderRadius: 8, padding: '8px 12px', fontSize: 13, color: '#E05050', cursor: 'pointer',

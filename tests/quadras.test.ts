@@ -5,7 +5,7 @@ import {
   caixaDoContorno, consultaRuas, featureDaQuadra, gerarQuadras, gerarQuadrasDoContorno,
   lerRuasDoOverpass, type Ponto, type RuaOSM,
 } from '@/lib/quadrasOSM'
-import { gerarLados, nomeDaQuadra, proximaSequencia } from '@/lib/quadras'
+import { nomeDaQuadra, proximaSequencia } from '@/lib/quadras'
 
 const LAT = -6.52
 const LNG = -49.85
@@ -115,12 +115,6 @@ test('nomes em sequência dentro do território', () => {
   assert.equal(proximaSequencia([], '06'), 1)
 })
 
-test('lados saem um por aresta', () => {
-  const lados = gerarLados([[0, 0], [1, 0], [1, 1], [0, 0]])
-  assert.equal(lados.length, 3)
-  assert.deepEqual(lados[2].fim, [0, 0])
-})
-
 test('bairro irregular: diagonal, curva e rua sem saída', () => {
   const ruas: RuaOSM[] = [
     { id: 1, nome: 'Avenida', pontos: [ponto(0, 0), ponto(3, 0)] },
@@ -145,7 +139,7 @@ test('bairro irregular: diagonal, curva e rua sem saída', () => {
   }
 })
 
-test('quadra gravada vira Feature com um lado por aresta', () => {
+test('quadra gravada vira Feature com o anel fechado', () => {
   const { quadras } = gerarQuadras({ contorno: contornoTudo, ruas: ruasGrade() })
   const feature = featureDaQuadra(quadras[0]) as {
     type: string
@@ -156,12 +150,6 @@ test('quadra gravada vira Feature com um lado por aresta', () => {
   assert.equal(feature.geometry.type, 'Polygon')
   assert.equal(feature.geometry.coordinates[0].length, 5)
   assert.equal(feature.properties.origem, 'osm')
-
-  const lados = gerarLados(quadras[0].anel)
-  assert.equal(lados.length, 4)
-  assert.deepEqual(lados[0].inicio, quadras[0].anel[0])
-  assert.deepEqual(lados[3].fim, quadras[0].anel[0])
-  assert.ok(lados.every((l) => l.status === 'nao_iniciado'))
 })
 
 test('tira fina entre a rua e a divisa não vira quadra', () => {

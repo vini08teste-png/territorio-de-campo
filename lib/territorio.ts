@@ -25,8 +25,6 @@ export interface ContornoTerritorio {
 export interface TerritorioImportado {
   numero: number
   localidade: string
-  publicadores: number | null
-  familias: number | null
   link_maps: string | null
   geojson: ContornoTerritorio
 }
@@ -57,21 +55,6 @@ export function escaparHtml(texto: string): string {
     '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
   }
   return texto.replace(/[&<>"']/g, (caractere) => substituicoes[caractere])
-}
-
-export function resumoPublicadoresFamilias(territorio: {
-  publicadores?: number | null
-  familias?: number | null
-}): string | null {
-  const partes: string[] = []
-  if (territorio.publicadores !== null && territorio.publicadores !== undefined) {
-    partes.push(`👥 ${territorio.publicadores} publicador(es)`)
-  }
-  if (territorio.familias !== null && territorio.familias !== undefined) {
-    partes.push(`🏠 ${territorio.familias} família(s)`)
-  }
-  if (partes.length === 0) return null
-  return partes.join(' · ')
 }
 
 // ── Geometria ─────────────────────────────────────────────────────────────────
@@ -187,8 +170,6 @@ export function lerTerritoriosDoGeoJSON(conteudo: unknown): { territorios: Terri
     territorios.push({
       numero,
       localidade: textoOuNulo(propriedades.localidade) ?? '',
-      publicadores: inteiroOuNulo(propriedades.publicadores),
-      familias: inteiroOuNulo(propriedades.familias),
       link_maps: textoOuNulo(propriedades.link_maps),
       geojson: { type: 'Feature', geometry: geometria, properties: { numero } },
     })

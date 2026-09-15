@@ -23,30 +23,19 @@ export type Territorio = {
   bairro: string
   status: string
   geojson: Record<string, unknown> | null
-  publicadores: number | null
-  familias: number | null
   link_maps: string | null
+  congregacao: string | null
   criado_por: string
   criado_em: string
 }
 
 export type Quadra = {
   id: string
-  territorio_id: string
+  territorio_id: string | null
   nome: string
   status: 'nao_iniciado' | 'em_andamento' | 'parcial' | 'concluido' | 'pendente'
   geojson: Record<string, unknown>
-  lados: Lado[]
   criado_em: string
-}
-
-export type Lado = {
-  id: string
-  quadra_id: string
-  indice: number
-  status: 'nao_iniciado' | 'em_andamento' | 'parcial' | 'concluido'
-  inicio: [number, number]
-  fim: [number, number]
 }
 
 export type Marcacao = {

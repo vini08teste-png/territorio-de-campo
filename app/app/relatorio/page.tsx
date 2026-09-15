@@ -11,7 +11,6 @@ interface Quadra {
   id: string
   nome: string
   status: StatusQuadra
-  lados: { status: StatusQuadra }[]
 }
 
 interface Territorio {
@@ -61,12 +60,7 @@ const CORES: Record<StatusQuadra, { fill: string; stroke: string; label: string 
 
 function calcularProgresso(quadras: Quadra[]): number {
   if (!quadras.length) return 0
-  const soma = quadras.reduce((acc, q) => {
-    if (q.lados?.length) {
-      return acc + q.lados.reduce((s, l) => s + (PESO[l.status] ?? 0), 0) / q.lados.length
-    }
-    return acc + (PESO[q.status] ?? 0)
-  }, 0)
+  const soma = quadras.reduce((acc, q) => acc + (PESO[q.status] ?? 0), 0)
   return Math.round((soma / quadras.length) * 100)
 }
 
@@ -236,9 +230,6 @@ export default function RelatorioPage() {
           ) : (
             quadras.map((q) => {
               const c = CORES[q.status] ?? CORES.nao_iniciado
-              const prog = q.lados?.length
-                ? Math.round(q.lados.reduce((s, l) => s + (PESO[l.status] ?? 0), 0) / q.lados.length * 100)
-                : null
               return (
                 <div key={q.id} style={{
                   background: '#FFFFFF', border: '0.5px solid #EEEEEE',
@@ -247,16 +238,8 @@ export default function RelatorioPage() {
                 }}>
                   <div style={{ flex: 1 }}>
                     <div style={{ fontSize: 15, fontWeight: 600, color: '#1A1A1A' }}>{q.nome}</div>
-                    {prog !== null && (
-                      <div style={{ marginTop: 6, height: 4, background: '#F0F0F0', borderRadius: 2, overflow: 'hidden', maxWidth: 160 }}>
-                        <div style={{ height: '100%', width: `${prog}%`, background: c.stroke, borderRadius: 2 }} />
-                      </div>
-                    )}
                   </div>
                   <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexShrink: 0 }}>
-                    {prog !== null && (
-                      <span style={{ fontSize: 12, color: '#888' }}>{prog}%</span>
-                    )}
                     <span style={{
                       fontSize: 12, fontWeight: 500, padding: '3px 10px', borderRadius: 20,
                       background: c.fill, color: '#333', border: `1px solid ${c.stroke}55`,

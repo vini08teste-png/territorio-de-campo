@@ -61,18 +61,22 @@ insert into auth.users (id) values
   ('00000000-0000-0000-0000-0000000000d2'),
   ('00000000-0000-0000-0000-0000000000e1');
 
-insert into public.usuarios (id, nome, email, perfil, ativo) values
-  ('00000000-0000-0000-0000-0000000000a1', 'Admin', 'admin@teste', 'admin', true),
-  ('00000000-0000-0000-0000-0000000000b1', 'ST', 'st@teste', 'superintendente_territorio', true),
-  ('00000000-0000-0000-0000-0000000000c1', 'SG 1', 'sg1@teste', 'superintendente_grupo', true),
-  ('00000000-0000-0000-0000-0000000000c2', 'SG 2', 'sg2@teste', 'superintendente_grupo', true),
-  ('00000000-0000-0000-0000-0000000000d1', 'Dirigente 1', 'd1@teste', 'dirigente', true),
-  ('00000000-0000-0000-0000-0000000000d2', 'Dirigente 2', 'd2@teste', 'dirigente', true),
-  ('00000000-0000-0000-0000-0000000000e1', 'Admin inativo', 'inativo@teste', 'admin', false);
+-- Todo mundo na mesma congregação "C1" — deixa os testes que já existiam
+-- (nada a ver com isolamento por congregação) se comportando exatamente
+-- como antes dessa feature existir. Os testes de isolamento, mais abaixo,
+-- mexem em congregação pontualmente dentro do próprio bloco/transação.
+insert into public.usuarios (id, nome, email, perfil, ativo, congregacao) values
+  ('00000000-0000-0000-0000-0000000000a1', 'Admin', 'admin@teste', 'admin', true, 'C1'),
+  ('00000000-0000-0000-0000-0000000000b1', 'ST', 'st@teste', 'superintendente_territorio', true, 'C1'),
+  ('00000000-0000-0000-0000-0000000000c1', 'SG 1', 'sg1@teste', 'superintendente_grupo', true, 'C1'),
+  ('00000000-0000-0000-0000-0000000000c2', 'SG 2', 'sg2@teste', 'superintendente_grupo', true, 'C1'),
+  ('00000000-0000-0000-0000-0000000000d1', 'Dirigente 1', 'd1@teste', 'dirigente', true, 'C1'),
+  ('00000000-0000-0000-0000-0000000000d2', 'Dirigente 2', 'd2@teste', 'dirigente', true, 'C1'),
+  ('00000000-0000-0000-0000-0000000000e1', 'Admin inativo', 'inativo@teste', 'admin', false, 'C1');
 
-insert into public.territorios (id, nome, numero) values
-  ('10000000-0000-0000-0000-000000000001', 'Território 1', '1'),
-  ('10000000-0000-0000-0000-000000000002', 'Território 2', '2');
+insert into public.territorios (id, nome, numero, congregacao) values
+  ('10000000-0000-0000-0000-000000000001', 'Território 1', '1', 'C1'),
+  ('10000000-0000-0000-0000-000000000002', 'Território 2', '2', 'C1');
 
 insert into public.quadras (id, territorio_id, nome) values
   ('20000000-0000-0000-0000-000000000001', '10000000-0000-0000-0000-000000000001', 'Quadra 1'),
@@ -159,13 +163,62 @@ rollback;
 begin;
 select teste.como('00000000-0000-0000-0000-0000000000b1');
 set local role authenticated;
-select teste.esperar(teste.linhas($$insert into public.territorios (nome, numero, publicadores, familias, link_maps) values ('Novo', '38', 3, 2, 'https://goo.gl/maps/x')$$), 1, 'ST cria território com publicadores, famílias e link');
+select teste.esperar(teste.linhas($$insert into public.territorios (nome, numero, publicadores, familias, link_maps, congregacao) values ('Novo', '38', 3, 2, 'https://goo.gl/maps/x', 'C1')$$), 1, 'ST cria território com publicadores, famílias e link');
 select teste.esperar(teste.linhas($$update public.quadras set nome = 'Quadra A', geojson = '{}' where id = '20000000-0000-0000-0000-000000000001'$$), 1, 'ST altera nome e contorno da quadra');
 select teste.esperar(teste.linhas($$delete from public.territorios where id = '10000000-0000-0000-0000-000000000002'$$), 1, 'ST apaga território');
 rollback;
 
 begin;
 select teste.esperar(teste.linhas($$update public.quadras set geojson = '{}' where id = '20000000-0000-0000-0000-000000000001'$$), 1, 'service role/postgres ignora a trava de campos');
+rollback;
+
+-- -----------------------------------------------------------------------------
+-- isolamento por congregação
+--   Território 3 fica numa congregação diferente ("C2") de todo o resto
+--   dos fixtures ("C1"), só dentro dos blocos abaixo.
+-- -----------------------------------------------------------------------------
+
+begin;
+insert into public.territorios (id, nome, numero, congregacao) values
+  ('10000000-0000-0000-0000-000000000003', 'Território 3', '3', 'C2');
+select teste.como('00000000-0000-0000-0000-0000000000d1');
+set local role authenticated;
+select teste.esperar(teste.linhas($$select * from public.territorios$$), 2, 'dirigente da C1 só vê territórios da própria congregação');
+rollback;
+
+begin;
+insert into public.territorios (id, nome, numero, congregacao) values
+  ('10000000-0000-0000-0000-000000000003', 'Território 3', '3', 'C2');
+select teste.como('00000000-0000-0000-0000-0000000000a1');
+set local role authenticated;
+select teste.esperar(teste.linhas($$select * from public.territorios$$), 3, 'admin vê territórios de todas as congregações');
+rollback;
+
+begin;
+update public.usuarios set congregacao = null where id = '00000000-0000-0000-0000-0000000000d1';
+select teste.como('00000000-0000-0000-0000-0000000000d1');
+set local role authenticated;
+select teste.esperar(teste.linhas($$select * from public.territorios$$), 0, 'usuário sem congregação preenchida não vê nenhum território');
+rollback;
+
+begin;
+insert into public.territorios (id, nome, numero, congregacao) values
+  ('10000000-0000-0000-0000-000000000003', 'Território 3', '3', 'C2');
+insert into public.quadras (id, territorio_id, nome) values
+  ('20000000-0000-0000-0000-000000000003', '10000000-0000-0000-0000-000000000003', 'Quadra 3');
+select teste.como('00000000-0000-0000-0000-0000000000d1');
+set local role authenticated;
+select teste.esperar(teste.linhas($$select * from public.quadras$$), 2, 'dirigente da C1 não vê quadra de território de outra congregação');
+select teste.esperar(teste.linhas($$update public.quadras set status = 'concluido' where id = '20000000-0000-0000-0000-000000000003'$$), 0, 'dirigente não marca quadra de outra congregação');
+rollback;
+
+begin;
+insert into public.territorios (id, nome, numero, congregacao) values
+  ('10000000-0000-0000-0000-000000000003', 'Território 3', '3', 'C2');
+select teste.como('00000000-0000-0000-0000-0000000000b1');
+set local role authenticated;
+select teste.esperar(teste.linhas($$insert into public.territorios (nome, numero, congregacao) values ('Y', '77', 'C2')$$), -1, 'ST não cria território em congregação diferente da própria');
+select teste.esperar(teste.linhas($$delete from public.territorios where id = '10000000-0000-0000-0000-000000000003'$$), 0, 'ST não apaga território de outra congregação');
 rollback;
 
 -- -----------------------------------------------------------------------------

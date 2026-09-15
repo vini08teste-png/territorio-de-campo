@@ -48,6 +48,15 @@ const ESPELHOS_OVERPASS = [
   'https://overpass.kumi.systems/api/interpreter',
 ]
 
+/**
+ * Espelho fora do ar às vezes não recusa a conexão, só nunca responde — sem
+ * isso o fetch fica pendurado e a tela trava em "Consultando…" pra sempre.
+ * Maior que o `timeout:60` da consulta (ver `consultaRuas`) com folga pra
+ * fila/rede do servidor público, senão corta consulta grande que só tava
+ * demorando (não travada).
+ */
+const TEMPO_LIMITE_ESPELHO_MS = 75_000
+
 /** Quadra pequena demais costuma ser canteiro/rotatória; grande demais, mato. */
 export const AREA_MINIMA_M2 = 400
 export const AREA_MAXIMA_M2 = 150_000
@@ -206,24 +215,45 @@ export function lerRuasDoOverpass(resposta: unknown): RuaOSM[] {
   return ruas
 }
 
-/** Consulta a Overpass; se o primeiro espelho falhar, tenta o seguinte. */
+/**
+ * Sinal que aborta sozinho depois de `ms`, além de propagar o cancelamento de
+ * `sinal` (o do usuário). `cancelar` desarma o timeout quando não precisa mais.
+ */
+function sinalComTempoLimite(sinal: AbortSignal | undefined, ms: number): { signal: AbortSignal; cancelar: () => void } {
+  const controle = new AbortController()
+  const timeoutId = setTimeout(() => controle.abort(), ms)
+  const propagar = () => controle.abort()
+  sinal?.addEventListener('abort', propagar)
+  return {
+    signal: controle.signal,
+    cancelar: () => {
+      clearTimeout(timeoutId)
+      sinal?.removeEventListener('abort', propagar)
+    },
+  }
+}
+
+/** Consulta a Overpass; se o primeiro espelho falhar (ou não responder), tenta o seguinte. */
 export async function buscarRuas(caixa: Caixa, sinal?: AbortSignal): Promise<RuaOSM[]> {
   const consulta = consultaRuas(caixa)
   let ultimoErro: unknown = null
 
   for (const espelho of ESPELHOS_OVERPASS) {
+    const { signal, cancelar } = sinalComTempoLimite(sinal, TEMPO_LIMITE_ESPELHO_MS)
     try {
       const resposta = await fetch(espelho, {
         method: 'POST',
         body: consulta,
         headers: { 'Content-Type': 'text/plain' },
-        signal: sinal,
+        signal,
       })
       if (!resposta.ok) throw new Error(`Overpass respondeu ${resposta.status}`)
       return lerRuasDoOverpass(await resposta.json())
     } catch (erro) {
       if (sinal?.aborted) throw erro
       ultimoErro = erro
+    } finally {
+      cancelar()
     }
   }
   throw new Error(

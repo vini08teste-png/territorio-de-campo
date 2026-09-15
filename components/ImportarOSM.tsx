@@ -1,13 +1,14 @@
 'use client'
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
-// Painel que gera as quadras de um território a partir das ruas do
-// OpenStreetMap: escolhe o território (precisa ter contorno), monta a prévia no
-// mapa e só grava depois que o ST ou admin desmarca o que saiu errado.
+// Painel que gera quadras a partir das ruas do OpenStreetMap: escolhe o
+// território (precisa ter contorno) — ou desenha o perímetro da cidade na
+// hora, pra catalogar quadras sem território, pra agrupar depois — monta a
+// prévia no mapa e só grava depois que o ST ou admin desmarca o que saiu errado.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { supabase } from '@/lib/supabase'
-import { gerarLados, nomeDaQuadra, proximaSequencia } from '@/lib/quadras'
+import { nomeDaQuadra, proximaSequencia } from '@/lib/quadras'
 import { featureDaQuadra, gerarQuadrasDoContorno, type QuadraGerada } from '@/lib/quadrasOSM'
 import { poligonosDoContorno } from '@/lib/territorio'
 
@@ -25,7 +26,7 @@ interface Props {
   onFechar: () => void
 }
 
-type Etapa = 'selecao' | 'buscando' | 'revisao' | 'gravando' | 'erro'
+type Etapa = 'selecao' | 'desenhandoCidade' | 'buscando' | 'revisao' | 'gravando' | 'erro'
   | 'confirmarTodos' | 'gerandoTodos' | 'resumo'
 
 type Situacao = 'gravadas' | 'ja_tinha' | 'sem_quadras' | 'erro'
@@ -66,8 +67,10 @@ export default function ImportarOSM({ mapInstance: map, territorios, onConcluir,
   const [erroMsg, setErroMsg] = useState('')
   const [progresso, setProgresso] = useState<{ atual: number; total: number; nome: string } | null>(null)
   const [resumo, setResumo] = useState<LinhaResumo[]>([])
+  const [modoCidade, setModoCidade] = useState(false)
   const previewRef = useRef<any[]>([])
   const abortRef = useRef<AbortController | null>(null)
+  const desenhoCidadeRef = useRef<{ control: any; drawer: any } | null>(null)
 
   const comContorno = useMemo(
     () => territorios.filter((t) => poligonosDoContorno(t.geojson).length > 0),
@@ -85,20 +88,27 @@ export default function ImportarOSM({ mapInstance: map, territorios, onConcluir,
     abortRef.current?.abort()
     previewRef.current.forEach((camada) => { try { map.removeLayer(camada) } catch {} })
     previewRef.current = []
+    if (desenhoCidadeRef.current) {
+      try { desenhoCidadeRef.current.drawer.disable() } catch {}
+      try { map.removeControl(desenhoCidadeRef.current.control) } catch {}
+      desenhoCidadeRef.current = null
+    }
   }, [map])
 
-  // Nome provisório de cada quadra, na ordem em que serão gravadas
+  // Nome provisório de cada quadra, na ordem em que serão gravadas. Fora de um
+  // território, entra o prefixo "NC" (não classificada) em vez do número dele.
   const nomes = useMemo(() => {
-    if (!territorio) return new Map<number, string>()
-    let sequencia = proximaSequencia(quadrasExistentes, territorio.numero)
+    if (!modoCidade && !territorio) return new Map<number, string>()
+    const prefixo = modoCidade ? 'NC' : territorio!.numero
+    let sequencia = proximaSequencia(quadrasExistentes, prefixo)
     const mapa = new Map<number, string>()
     quadras.forEach((_, i) => {
       if (!selecionadas.has(i)) return
-      mapa.set(i, nomeDaQuadra(territorio.numero, sequencia))
+      mapa.set(i, nomeDaQuadra(prefixo, sequencia))
       sequencia++
     })
     return mapa
-  }, [quadras, selecionadas, quadrasExistentes, territorio])
+  }, [quadras, selecionadas, quadrasExistentes, territorio, modoCidade])
 
   // Rótulo com o nome que cada quadra vai receber ao gravar
   useEffect(() => {
@@ -128,8 +138,9 @@ export default function ImportarOSM({ mapInstance: map, territorios, onConcluir,
   }, [estiloDaPrevia])
 
   // ── Gerar a prévia ─────────────────────────────────────────────────────────
-  const gerar = useCallback(async () => {
-    if (!territorio) return
+  // Núcleo comum: busca as ruas dentro do contorno dado e monta a prévia no
+  // mapa. `territorioId` ausente = catálogo sem território (quadras "soltas").
+  const executarGeracao = useCallback(async (contorno: unknown, territorioId?: string) => {
     const L = (window as any).L
     abortRef.current?.abort()
     const controle = new AbortController()
@@ -138,9 +149,13 @@ export default function ImportarOSM({ mapInstance: map, territorios, onConcluir,
     setEtapa('buscando')
     limparPreview()
     try {
+      const consultaExistentes = territorioId
+        ? supabase.from('quadras').select('nome').eq('territorio_id', territorioId)
+        : supabase.from('quadras').select('nome').is('territorio_id', null)
+
       const [resultado, { data: jaGravadas }] = await Promise.all([
-        gerarQuadrasDoContorno(territorio.geojson, { sinal: controle.signal }),
-        supabase.from('quadras').select('nome').eq('territorio_id', territorio.id),
+        gerarQuadrasDoContorno(contorno, { sinal: controle.signal }),
+        consultaExistentes,
       ])
       if (controle.signal.aborted) return
 
@@ -148,7 +163,7 @@ export default function ImportarOSM({ mapInstance: map, territorios, onConcluir,
         throw new Error(
           resultado.ruasEncontradas === 0
             ? 'O OpenStreetMap não tem ruas mapeadas nesta região. Desenhe as quadras à mão ou cadastre as ruas no OSM.'
-            : 'As ruas encontradas não fecham nenhuma quadra dentro do contorno. Confira o contorno do território.'
+            : 'As ruas encontradas não fecham nenhuma quadra dentro do contorno. Confira o contorno desenhado.'
         )
       }
 
@@ -175,7 +190,50 @@ export default function ImportarOSM({ mapInstance: map, territorios, onConcluir,
       setErroMsg(mensagemDeErro(erro))
       setEtapa('erro')
     }
-  }, [territorio, map, limparPreview, estiloDaPrevia, alternar])
+  }, [map, limparPreview, estiloDaPrevia, alternar])
+
+  const gerar = useCallback(async () => {
+    if (!territorio) return
+    setModoCidade(false)
+    await executarGeracao(territorio.geojson, territorio.id)
+  }, [territorio, executarGeracao])
+
+  // ── Desenhar o perímetro da cidade (sem território) ─────────────────────────
+  const iniciarDesenhoCidade = useCallback(() => {
+    const L = (window as any).L
+    if (!map || !L || !L.Draw) return
+    limparPreview()
+    setEtapa('desenhandoCidade')
+
+    const drawControl = new L.Control.Draw({
+      draw: { polygon: { allowIntersection: false, showArea: true }, polyline: false, rectangle: false, circle: false, marker: false, circlemarker: false },
+      edit: false,
+    })
+    map.addControl(drawControl)
+    const drawer = new L.Draw.Polygon(map, drawControl.options.draw.polygon)
+    drawer.enable()
+    desenhoCidadeRef.current = { control: drawControl, drawer }
+
+    let criado = false
+    map.once(L.Draw.Event.CREATED, (e: any) => {
+      criado = true
+      try { map.removeControl(drawControl) } catch {}
+      desenhoCidadeRef.current = null
+      const geojson = e.layer.toGeoJSON()
+      setModoCidade(true)
+      void executarGeracao(geojson)
+    })
+    map.once(L.Draw.Event.DRAWSTOP, () => {
+      if (criado) return
+      try { map.removeControl(drawControl) } catch {}
+      desenhoCidadeRef.current = null
+      setEtapa('selecao')
+    })
+  }, [map, limparPreview, executarGeracao])
+
+  function cancelarDesenhoCidade() {
+    desenhoCidadeRef.current?.drawer.disable()
+  }
 
   // ── Gerar em todos os territórios de uma vez ───────────────────────────────
   const gerarTodos = useCallback(async () => {
@@ -188,9 +246,11 @@ export default function ImportarOSM({ mapInstance: map, territorios, onConcluir,
     setEtapa('gerandoTodos')
 
     // Quem já tem quadra fica de fora, para não duplicar o que foi feito à mão
+    // (quadras sem território, geradas pelo catálogo da cidade, não contam aqui)
     const { data: jaGravadas } = await supabase.from('quadras').select('territorio_id')
     const comQuadras = new Map<string, number>()
-    for (const q of (jaGravadas ?? []) as { territorio_id: string }[]) {
+    for (const q of (jaGravadas ?? []) as { territorio_id: string | null }[]) {
+      if (!q.territorio_id) continue
       comQuadras.set(q.territorio_id, (comQuadras.get(q.territorio_id) ?? 0) + 1)
     }
 
@@ -220,7 +280,6 @@ export default function ImportarOSM({ mapInstance: map, territorios, onConcluir,
             nome: nomeDaQuadra(alvo.numero, k + 1),
             status: 'nao_iniciado',
             geojson: featureDaQuadra(quadra),
-            lados: gerarLados(quadra.anel),
           }))
           const { error } = await supabase.from('quadras').insert(registros)
           if (error) linhas.push({ territorio: rotulo, situacao: 'erro', quadras: 0, detalhe: error.message })
@@ -252,18 +311,17 @@ export default function ImportarOSM({ mapInstance: map, territorios, onConcluir,
 
   // ── Gravar ─────────────────────────────────────────────────────────────────
   async function gravar() {
-    if (!territorio || selecionadas.size === 0) return
+    if ((!modoCidade && !territorio) || selecionadas.size === 0) return
     setEtapa('gravando')
 
     const linhas = quadras
       .map((quadra, i) => ({ quadra, nome: nomes.get(i) }))
       .filter((item): item is { quadra: QuadraGerada; nome: string } => !!item.nome)
       .map(({ quadra, nome }) => ({
-        territorio_id: territorio.id,
+        territorio_id: modoCidade ? null : territorio!.id,
         nome,
         status: 'nao_iniciado',
         geojson: featureDaQuadra(quadra),
-        lados: gerarLados(quadra.anel),
       }))
 
     const { error } = await supabase.from('quadras').insert(linhas)
@@ -282,6 +340,30 @@ export default function ImportarOSM({ mapInstance: map, territorios, onConcluir,
   const marcadas = selecionadas.size
   const totalGravadas = resumo.reduce((soma, l) => soma + (l.situacao === 'gravadas' ? l.quadras : 0), 0)
   const territoriosGravados = resumo.filter((l) => l.situacao === 'gravadas').length
+
+  // Enquanto desenha o perímetro da cidade, o mapa inteiro fica livre — só uma
+  // barra de instrução flutuante, sem o painel lateral de 380px no caminho.
+  if (etapa === 'desenhandoCidade') {
+    return (
+      <div style={{
+        position: 'absolute', top: 16, left: '50%', transform: 'translateX(-50%)',
+        zIndex: 1100, background: '#FFFFFF', borderRadius: 12,
+        boxShadow: '0 4px 20px rgba(0,0,0,0.18)', padding: '12px 16px',
+        display: 'flex', alignItems: 'center', gap: 12, maxWidth: 'calc(100% - 32px)',
+      }}>
+        <span style={{ fontSize: 13, color: '#333', lineHeight: 1.5 }}>
+          ✏️ Desenhe o perímetro urbano da cidade. Clique pra marcar cada ponto e feche no primeiro ponto.
+          <br /><span style={{ color: '#888' }}>Área grande demora mais — se travar, desenhe por partes.</span>
+        </span>
+        <button onClick={cancelarDesenhoCidade} style={{
+          flexShrink: 0, padding: '8px 14px', fontSize: 13, fontWeight: 600,
+          background: '#F7F7F7', color: '#555', border: '0.5px solid #DDD', borderRadius: 8, cursor: 'pointer',
+        }}>
+          Cancelar
+        </button>
+      </div>
+    )
+  }
 
   return (
     <div style={{
@@ -368,6 +450,20 @@ export default function ImportarOSM({ mapInstance: map, territorios, onConcluir,
                 </button>
               </>
             )}
+
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10, color: '#CCCCCC', fontSize: 12 }}>
+              <span style={{ flex: 1, height: 1, background: '#EEEEEE' }} /> ou <span style={{ flex: 1, height: 1, background: '#EEEEEE' }} />
+            </div>
+            <button onClick={iniciarDesenhoCidade} style={{
+              padding: '13px', fontSize: 14, fontWeight: 600,
+              background: '#FFFFFF', color: '#3BAD68',
+              border: '1.5px solid #3BAD68', borderRadius: 10, cursor: 'pointer',
+            }}>
+              🏙️ Catalogar toda a cidade (desenhar perímetro)
+            </button>
+            <p style={{ fontSize: 12, color: '#AAAAAA', margin: 0 }}>
+              Gera as quadras de uma área desenhada na hora, sem depender de território — pra depois agrupar cada uma no território certo.
+            </p>
           </div>
         )}
 
@@ -444,7 +540,7 @@ export default function ImportarOSM({ mapInstance: map, territorios, onConcluir,
           <div style={{ textAlign: 'center', padding: '2rem 0', color: '#666' }}>
             <div style={{ fontSize: 40, marginBottom: 12 }}>🌐</div>
             <p style={{ fontSize: 15 }}>Consultando o OpenStreetMap…</p>
-            <p style={{ fontSize: 13, color: '#AAAAAA', marginTop: 8 }}>Costuma levar alguns segundos.</p>
+            <p style={{ fontSize: 13, color: '#AAAAAA', marginTop: 8 }}>Costuma levar alguns segundos. Área grande demora mais; se o servidor não responder, o app tenta um espelho seguinte sozinho antes de avisar que deu erro.</p>
           </div>
         )}
 
@@ -474,7 +570,7 @@ export default function ImportarOSM({ mapInstance: map, territorios, onConcluir,
           <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
             {quadrasExistentes.length > 0 && (
               <div style={{ background: '#FFF8E7', border: '1px solid #F0C060', borderRadius: 10, padding: '10px 12px', fontSize: 13, color: '#412402', lineHeight: 1.5 }}>
-                Este território já tem {quadrasExistentes.length} quadra(s). As novas entram numerando a partir daí, sem apagar nada.
+                {modoCidade ? 'Já existem' : 'Este território já tem'} {quadrasExistentes.length} quadra(s){modoCidade ? ' sem território' : ''}. As novas entram numerando a partir daí, sem apagar nada.
               </div>
             )}
 

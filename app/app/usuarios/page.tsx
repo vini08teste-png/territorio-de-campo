@@ -17,12 +17,6 @@ interface TerritorioOpcao {
   numero: string
 }
 
-interface QuadraOpcao {
-  id: string
-  nome: string
-  territorio_id: string
-}
-
 const PERFIS: { value: Perfil; label: string }[] = [
   { value: 'dirigente',                  label: 'Dirigente' },
   { value: 'superintendente_grupo',      label: 'Sup. de Grupo' },
@@ -47,21 +41,22 @@ export default function UsuariosPage() {
   const [erro, setErro] = useState<string | null>(null)
 
   const [territorios, setTerritorios] = useState<TerritorioOpcao[]>([])
-  const [quadras, setQuadras] = useState<QuadraOpcao[]>([])
   const [designacoesAtuais, setDesignacoesAtuais] = useState<{ id: string; valor: string }[]>([])
   const [designacoesSelecionadas, setDesignacoesSelecionadas] = useState<Set<string>>(new Set())
   const [carregandoDesignacao, setCarregandoDesignacao] = useState(false)
+  // Dirigente: grupo (SG) em que está, em vez de quadras avulsas designadas
+  const [grupoAtualId, setGrupoAtualId] = useState<string | null>(null)
+  const [grupoAtualSgId, setGrupoAtualSgId] = useState<string | null>(null)
+  const [grupoSgSelecionado, setGrupoSgSelecionado] = useState('')
 
   useEffect(() => {
     if (verificandoAcesso || !autorizado) return
     void Promise.all([
       supabase.from('usuarios').select('*').order('nome'),
       supabase.from('territorios').select('id, nome, numero').order('numero'),
-      supabase.from('quadras').select('id, nome, territorio_id').order('nome'),
-    ]).then(([u, t, q]) => {
+    ]).then(([u, t]) => {
       setUsuarios(u.data ?? [])
       setTerritorios((t.data as TerritorioOpcao[]) ?? [])
-      setQuadras((q.data as QuadraOpcao[]) ?? [])
       setCarregando(false)
     })
   }, [verificandoAcesso, autorizado])
@@ -103,23 +98,35 @@ export default function UsuariosPage() {
     setNovaCongregacao(u.congregacao ?? '')
     setDesignacoesAtuais([])
     setDesignacoesSelecionadas(new Set())
+    setGrupoAtualId(null)
+    setGrupoAtualSgId(null)
+    setGrupoSgSelecionado('')
 
-    if (u.perfil === 'dirigente' || u.perfil === 'superintendente_grupo') {
+    if (u.perfil === 'superintendente_grupo') {
       setCarregandoDesignacao(true)
       const { data } = await supabase
         .from('designacoes')
-        .select('id, territorio_id, quadra_id')
+        .select('id, territorio_id')
         .eq('usuario_id', u.id)
+        .is('quadra_id', null)
         .is('data_fim', null)
         .order('data_inicio', { ascending: false })
 
-      const atuais = (data ?? []).map((d) => ({
-        id: d.id,
-        valor: (u.perfil === 'dirigente' ? d.quadra_id : d.territorio_id) ?? '',
-      })).filter((d) => d.valor)
-
+      const atuais = (data ?? []).map((d) => ({ id: d.id, valor: d.territorio_id ?? '' })).filter((d) => d.valor)
       setDesignacoesAtuais(atuais)
       setDesignacoesSelecionadas(new Set(atuais.map((d) => d.valor)))
+      setCarregandoDesignacao(false)
+    } else if (u.perfil === 'dirigente') {
+      setCarregandoDesignacao(true)
+      const { data } = await supabase
+        .from('membros_grupo')
+        .select('id, sg_id')
+        .eq('dirigente_id', u.id)
+        .is('data_fim', null)
+        .maybeSingle()
+      setGrupoAtualId(data?.id ?? null)
+      setGrupoAtualSgId(data?.sg_id ?? null)
+      setGrupoSgSelecionado(data?.sg_id ?? '')
       setCarregandoDesignacao(false)
     }
   }
@@ -177,12 +184,12 @@ export default function UsuariosPage() {
         return
       }
 
-      if (novoPerfil === 'dirigente' || novoPerfil === 'superintendente_grupo') {
+      if (novoPerfil === 'superintendente_grupo') {
         const valoresOriginais = new Set(designacoesAtuais.map((d) => d.valor))
         const paraAdicionar = [...designacoesSelecionadas].filter((v) => !valoresOriginais.has(v))
         const paraRemover = designacoesAtuais.filter((d) => !designacoesSelecionadas.has(d.valor))
 
-        if (novoPerfil === 'superintendente_grupo' && paraAdicionar.length > 0) {
+        if (paraAdicionar.length > 0) {
           const { data: conflitos } = await supabase
             .from('designacoes')
             .select('territorio_id')
@@ -197,46 +204,50 @@ export default function UsuariosPage() {
           }
         }
 
-        if (novoPerfil === 'dirigente' && paraAdicionar.length > 0) {
-          const { data: conflitos } = await supabase
-            .from('designacoes')
-            .select('quadra_id')
-            .in('quadra_id', paraAdicionar)
-            .is('data_fim', null)
-            .neq('usuario_id', editando.id)
-
-          if (conflitos && conflitos.length > 0) {
-            mostrarErro('Dados salvos, mas uma das quadras selecionadas já está designada a outro dirigente.')
-            return
-          }
-        }
-
         for (const d of paraRemover) {
           await supabase.from('designacoes').update({ data_fim: new Date().toISOString() }).eq('id', d.id)
         }
-
         for (const valor of paraAdicionar) {
-          if (novoPerfil === 'dirigente') {
-            const quadra = quadras.find((q) => q.id === valor)
-            await supabase.from('designacoes').insert({
-              usuario_id: editando.id,
-              territorio_id: quadra?.territorio_id ?? null,
-              quadra_id: valor,
+          await supabase.from('designacoes').insert({
+            usuario_id: editando.id,
+            territorio_id: valor,
+            data_inicio: new Date().toISOString(),
+          })
+        }
+
+        // Perfil mudou de dirigente pra SG — sai do grupo que estava, se tinha
+        if (grupoAtualId) {
+          await supabase.from('membros_grupo').update({ data_fim: new Date().toISOString() }).eq('id', grupoAtualId)
+        }
+      } else if (novoPerfil === 'dirigente') {
+        if (grupoSgSelecionado !== (grupoAtualSgId ?? '')) {
+          if (grupoAtualId) {
+            await supabase.from('membros_grupo').update({ data_fim: new Date().toISOString() }).eq('id', grupoAtualId)
+          }
+          if (grupoSgSelecionado) {
+            const { error: erroGrupo } = await supabase.from('membros_grupo').insert({
+              dirigente_id: editando.id,
+              sg_id: grupoSgSelecionado,
               data_inicio: new Date().toISOString(),
             })
-          } else {
-            await supabase.from('designacoes').insert({
-              usuario_id: editando.id,
-              territorio_id: valor,
-              quadra_id: null,
-              data_inicio: new Date().toISOString(),
-            })
+            if (erroGrupo) {
+              mostrarErro('Dados salvos, mas houve erro ao atualizar o grupo.')
+              return
+            }
           }
         }
-      } else if (designacoesAtuais.length > 0) {
-        // Perfil mudou pra algo sem designação de campo — encerra as antigas
+
+        // Perfil mudou de SG pra dirigente — encerra território(s) que tinha como SG
         for (const d of designacoesAtuais) {
           await supabase.from('designacoes').update({ data_fim: new Date().toISOString() }).eq('id', d.id)
+        }
+      } else {
+        // Perfil não usa mais designação de território nem grupo — encerra tudo
+        for (const d of designacoesAtuais) {
+          await supabase.from('designacoes').update({ data_fim: new Date().toISOString() }).eq('id', d.id)
+        }
+        if (grupoAtualId) {
+          await supabase.from('membros_grupo').update({ data_fim: new Date().toISOString() }).eq('id', grupoAtualId)
         }
       }
 
@@ -729,7 +740,7 @@ export default function UsuariosPage() {
               </div>
             </div>
 
-            {(novoPerfil === 'dirigente' || novoPerfil === 'superintendente_grupo') && (
+            {novoPerfil === 'superintendente_grupo' && (
               <div style={{ marginBottom: 24 }}>
                 <label style={{
                   display: 'block',
@@ -738,8 +749,8 @@ export default function UsuariosPage() {
                   color: '#444',
                   marginBottom: 6,
                 }}>
-                  {novoPerfil === 'dirigente' ? 'Quadras designadas' : 'Territórios designados'}
-                  <span style={{ fontWeight: 400, color: '#999' }}> — pode marcar mais de uma</span>
+                  Territórios designados
+                  <span style={{ fontWeight: 400, color: '#999' }}> — pode marcar mais de um</span>
                 </label>
 
                 {carregandoDesignacao ? (
@@ -751,38 +762,59 @@ export default function UsuariosPage() {
                     border: '1px solid #DDDDDD', borderRadius: 8,
                     background: '#FAFAFA', padding: 8,
                   }}>
-                    {(novoPerfil === 'dirigente' ? quadras : territorios).length === 0 && (
-                      <span style={{ fontSize: 13, color: '#999', padding: 4 }}>
-                        {novoPerfil === 'dirigente' ? 'Nenhuma quadra cadastrada.' : 'Nenhum território cadastrado.'}
-                      </span>
+                    {territorios.length === 0 && (
+                      <span style={{ fontSize: 13, color: '#999', padding: 4 }}>Nenhum território cadastrado.</span>
                     )}
 
-                    {novoPerfil === 'dirigente'
-                      ? quadras.map((q) => {
-                          const t = territorios.find((terr) => terr.id === q.territorio_id)
-                          const marcado = designacoesSelecionadas.has(q.id)
-                          return (
-                            <label key={q.id} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '5px 6px', fontSize: 14, color: '#1A1A1A', cursor: 'pointer' }}>
-                              <input type="checkbox" checked={marcado} onChange={() => alternarDesignacao(q.id)} />
-                              {t ? `#${t.numero} ${t.nome} — ` : ''}{q.nome}
-                            </label>
-                          )
-                        })
-                      : territorios.map((t) => {
-                          const marcado = designacoesSelecionadas.has(t.id)
-                          return (
-                            <label key={t.id} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '5px 6px', fontSize: 14, color: '#1A1A1A', cursor: 'pointer' }}>
-                              <input type="checkbox" checked={marcado} onChange={() => alternarDesignacao(t.id)} />
-                              #{t.numero} — {t.nome}
-                            </label>
-                          )
-                        })}
+                    {territorios.map((t) => {
+                      const marcado = designacoesSelecionadas.has(t.id)
+                      return (
+                        <label key={t.id} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '5px 6px', fontSize: 14, color: '#1A1A1A', cursor: 'pointer' }}>
+                          <input type="checkbox" checked={marcado} onChange={() => alternarDesignacao(t.id)} />
+                          #{t.numero} — {t.nome}
+                        </label>
+                      )
+                    })}
                   </div>
                 )}
                 <p style={{ fontSize: 12, color: '#999', marginTop: 6 }}>
-                  {novoPerfil === 'dirigente'
-                    ? 'As quadras onde essa pessoa faz o trabalho de campo.'
-                    : 'Os territórios que essa pessoa supervisiona e valida.'}
+                  Os territórios que essa pessoa supervisiona e valida.
+                </p>
+              </div>
+            )}
+
+            {novoPerfil === 'dirigente' && (
+              <div style={{ marginBottom: 24 }}>
+                <label style={{
+                  display: 'block',
+                  fontSize: 13,
+                  fontWeight: 500,
+                  color: '#444',
+                  marginBottom: 6,
+                }}>
+                  Grupo (Sup. de Grupo)
+                </label>
+
+                {carregandoDesignacao ? (
+                  <p style={{ fontSize: 13, color: '#999', margin: 0 }}>Carregando…</p>
+                ) : (
+                  <select
+                    value={grupoSgSelecionado}
+                    onChange={(e) => setGrupoSgSelecionado(e.target.value)}
+                    style={{
+                      width: '100%', padding: '11px 14px', fontSize: 15,
+                      border: '1px solid #DDDDDD', borderRadius: 8, background: '#FAFAFA', color: '#1A1A1A',
+                      boxSizing: 'border-box',
+                    }}
+                  >
+                    <option value="">— Nenhum grupo —</option>
+                    {usuarios
+                      .filter((u) => u.perfil === 'superintendente_grupo' && u.ativo)
+                      .map((u) => <option key={u.id} value={u.id}>{u.nome}</option>)}
+                  </select>
+                )}
+                <p style={{ fontSize: 12, color: '#999', marginTop: 6 }}>
+                  Ao entrar num grupo, a pessoa passa a ver e marcar todas as quadras dos territórios já designados a esse Sup. de Grupo.
                 </p>
               </div>
             )}

@@ -4,8 +4,7 @@
 import { useEffect, useRef, useState, useCallback } from 'react'
 import { supabase, CORES_STATUS } from '@/lib/supabase'
 import ImportarOSM from '@/components/ImportarOSM'
-import { gerarLados } from '@/lib/quadras'
-import { escaparHtml, linkComoChegar, resumoPublicadoresFamilias } from '@/lib/territorio'
+import { escaparHtml, linkComoChegar } from '@/lib/territorio'
 
 
 type StatusQuadra = 'nao_iniciado' | 'em_andamento' | 'parcial' | 'concluido' | 'pendente'
@@ -16,21 +15,12 @@ interface GeoJSONFeature {
   properties?: Record<string, unknown>
 }
 
-interface Lado {
-  id: string
-  indice: number
-  inicio: [number, number]
-  fim: [number, number]
-  status: StatusQuadra
-}
-
 interface Quadra {
   id: string
   nome: string
   status: StatusQuadra
   geojson: GeoJSONFeature
-  lados: Lado[]
-  territorio_id: string
+  territorio_id: string | null
 }
 
 interface Territorio {
@@ -38,8 +28,6 @@ interface Territorio {
   nome: string
   numero: string
   geojson: GeoJSONFeature | null
-  publicadores: number | null
-  familias: number | null
   link_maps: string | null
 }
 
@@ -63,16 +51,6 @@ interface Usuario {
   perfil: string
 }
 
-const PESO: Record<StatusQuadra, number> = {
-  concluido: 1, parcial: 0.5,
-  nao_iniciado: 0, em_andamento: 0, pendente: 0,
-}
-
-function calcularProgresso(lados: Lado[]): number {
-  if (!lados || lados.length === 0) return 0
-  const soma = lados.reduce((acc, l) => acc + (PESO[l.status] ?? 0), 0)
-  return Math.round((soma / lados.length) * 100)
-}
 
 // Mesmos pesos da tela de territórios
 const PESO_TERRITORIO: Record<StatusQuadra, number> = {
@@ -93,15 +71,43 @@ function corDoProgresso(progresso: number): string {
   return '#9E9E9E'
 }
 
+function estiloDaQuadra(status: StatusQuadra) {
+  const cores = CORES_STATUS[status] ?? CORES_STATUS['nao_iniciado']
+  return { fillColor: cores.fill, fillOpacity: 0.45, color: cores.stroke, weight: 2 }
+}
+
+const ESTILO_SELECIONADA = { fillColor: '#D9C6FF', fillOpacity: 0.6, color: '#6B3FD4', weight: 3 }
+
+/** Item do menu de ações flutuante: ícone redondo colorido + rótulo numa pílula branca. */
+function BotaoAcaoMapa({ icone, texto, cor, onClick }: { icone: string; texto: string; cor: string; onClick: () => void }) {
+  return (
+    <button onClick={onClick} style={{
+      display: 'flex', alignItems: 'center', gap: 10, border: 'none', cursor: 'pointer',
+      background: 'none', padding: 0,
+    }}>
+      <span style={{
+        fontSize: 13, fontWeight: 600, color: '#1A1A1A', background: '#fff',
+        padding: '7px 12px', borderRadius: 20, boxShadow: '0 2px 8px rgba(0,0,0,0.18)',
+        whiteSpace: 'nowrap',
+      }}>
+        {texto}
+      </span>
+      <span style={{
+        width: 40, height: 40, borderRadius: '50%', background: cor, color: '#fff',
+        fontSize: 17, display: 'flex', alignItems: 'center', justifyContent: 'center',
+        boxShadow: '0 2px 8px rgba(0,0,0,0.25)', flexShrink: 0,
+      }}>
+        {icone}
+      </span>
+    </button>
+  )
+}
+
 function popupDoTerritorio(territorio: Territorio, progresso: number, totalQuadras: number): string {
   const linhas = [
     `<b style="font-size:14px">#${escaparHtml(String(territorio.numero))} — ${escaparHtml(territorio.nome)}</b>`,
     `<span style="color:#555">${totalQuadras} quadra(s) · ${progresso}% trabalhado</span>`,
   ]
-  const resumo = resumoPublicadoresFamilias(territorio)
-  if (resumo) {
-    linhas.push(`<span style="color:#555">${escaparHtml(resumo)}</span>`)
-  }
   const rota = linkComoChegar(territorio)
   if (rota) {
     linhas.push(`<a href="${escaparHtml(rota)}" target="_blank" rel="noreferrer" style="color:#378ADD;font-weight:600">🧭 Como chegar</a>`)
@@ -114,16 +120,19 @@ export default function Mapa() {
   const mapInstanceRef = useRef<any>(null)
   const layersRef = useRef<any[]>([])
   const territorioLayersRef = useRef<any[]>([])
-  const ladoLayersRef = useRef<Map<string, any>>(new Map())
   const pontoLayersRef = useRef<any[]>([])
   const pendingGeoJsonRef = useRef<any>(null)
   const apagarPontoRef = useRef<(id: string) => Promise<void>>(async () => {})
   const editarPontoRef = useRef<(p: PontoParada) => void>(() => {})
+  const modoSelecaoRef = useRef(false)
+  const selecionadasRef = useRef<Set<string>>(new Set())
+  const drawSelecaoRef = useRef<any>(null)
 
   const [usuario, setUsuario] = useState<Usuario | null>(null)
   const [territorios, setTerritorios] = useState<Territorio[]>([])
+  const [territoriosCarregados, setTerritoriosCarregados] = useState(false)
+  const [territorioFiltro, setTerritorioFiltro] = useState('')
   const [quadraAtiva, setQuadraAtiva] = useState<Quadra | null>(null)
-  const [ladoAtivo, setLadoAtivo] = useState<Lado | null>(null)
   const [painelAberto, setPainelAberto] = useState(false)
   const [modoDesenho, setModoDesenho] = useState(false)
   const [salvando, setSalvando] = useState(false)
@@ -138,6 +147,14 @@ export default function Mapa() {
 
   // Modal ponto de parada
   const [todosPontos, setTodosPontos] = useState<PontoParada[]>([])
+  const [menuAcoesAberto, setMenuAcoesAberto] = useState(false)
+
+  // Seleção por área: agrupar quadras sem território de uma vez num território
+  const [modoSelecao, setModoSelecao] = useState(false)
+  const [selecionadas, setSelecionadas] = useState<Set<string>>(new Set())
+  const [territorioParaAtribuir, setTerritorioParaAtribuir] = useState('')
+  const [atribuindo, setAtribuindo] = useState(false)
+
   const [modalPonto, setModalPonto] = useState(false)
   const [pontoCoords, setPontoCoords] = useState<{ lat: number; lng: number } | null>(null)
   const [pontoObs, setPontoObs] = useState('')
@@ -156,19 +173,6 @@ export default function Mapa() {
     setTimeout(() => setFeedback(null), 2500)
   }
 
-  // ── Renderizar lados ─────────────────────────────────────────────────────────
-  const renderizarLados = useCallback((m: any, quadra: Quadra, abrirFn: (q: Quadra, l: Lado) => void) => {
-    const L = (window as any).L
-    quadra.lados.forEach((lado) => {
-      const inicio: [number, number] = [lado.inicio[1], lado.inicio[0]]
-      const fim: [number, number] = [lado.fim[1], lado.fim[0]]
-      const cores = CORES_STATUS[lado.status] ?? CORES_STATUS['nao_iniciado']
-      const linha = L.polyline([inicio, fim], { color: cores.stroke, weight: 5, opacity: 0.85 }).addTo(m)
-      linha.on('click', (e: any) => { L.DomEvent.stopPropagation(e); abrirFn(quadra, lado) })
-      ladoLayersRef.current.set(lado.id, linha)
-    })
-  }, [])
-
   // ── Renderizar pontos ────────────────────────────────────────────────────────
   const renderizarPontos = useCallback((m: any, pts: PontoParada[]) => {
     const L = (window as any).L
@@ -183,6 +187,7 @@ export default function Mapa() {
         iconSize: [28, 28], iconAnchor: [14, 28],
       })
       const marker = L.marker([p.lat, p.lng], { icon }).addTo(m)
+      ;(marker as any)._quadraId = p.quadra_id
       const nome = (p.usuario as any)?.nome ?? 'Desconhecido'
       const data = p.criado_em
         ? new Date(p.criado_em).toLocaleString('pt-BR', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' })
@@ -217,12 +222,59 @@ export default function Mapa() {
     })
   }, [])
 
-  const abrirPainelLado = useCallback((q: Quadra, l: Lado) => {
-    setQuadraAtiva(q); setLadoAtivo(l); setPainelAberto(true)
+  // ── Filtro "ver só um território" ───────────────────────────────────────────
+  // Usa ref (não state) pra poder ser chamada no fim de carregarQuadras sem
+  // entrar nas dependências do useCallback — senão toda troca de filtro
+  // recriaria carregarQuadras e, por tabela, remontaria o mapa inteiro.
+  const territorioFiltroRef = useRef('')
+  useEffect(() => { territorioFiltroRef.current = territorioFiltro }, [territorioFiltro])
+
+  const aplicarFiltroTerritorio = useCallback(() => {
+    const m = mapInstanceRef.current
+    if (!m) return
+    const filtro = territorioFiltroRef.current
+
+    const alternar = (layer: any, dentro: boolean) => {
+      if (dentro) { if (!m.hasLayer(layer)) layer.addTo(m) }
+      else if (m.hasLayer(layer)) m.removeLayer(layer)
+    }
+
+    territorioLayersRef.current.forEach((layer: any) =>
+      alternar(layer, !filtro || layer._territorioId === filtro))
+
+    const quadraTerritorio = new Map<string, string | null>()
+    layersRef.current.forEach((layer: any) => {
+      if (layer._quadra) quadraTerritorio.set(layer._quadra.id, layer._quadra.territorio_id)
+      alternar(layer, !filtro || layer._quadra?.territorio_id === filtro)
+    })
+
+    pontoLayersRef.current.forEach((layer: any) =>
+      alternar(layer, !filtro || quadraTerritorio.get(layer._quadraId) === filtro))
+  }, [])
+
+  useEffect(() => {
+    aplicarFiltroTerritorio()
+    const m = mapInstanceRef.current
+    if (!m || !territorioFiltro) return
+    const layer = territorioLayersRef.current.find((l: any) => l._territorioId === territorioFiltro)
+    if (layer) m.fitBounds(layer.getBounds(), { maxZoom: 17, padding: [24, 24] })
+  }, [territorioFiltro, aplicarFiltroTerritorio])
+
+  // ── Seleção por área ─────────────────────────────────────────────────────────
+  // Clique em quadra durante o modo seleção alterna ela dentro/fora do grupo,
+  // em vez de abrir o painel de detalhe. Só quadra sem território entra.
+  const alternarSelecaoQuadra = useCallback((q: Quadra, layer: any) => {
+    if (q.territorio_id) return
+    setSelecionadas((anterior) => {
+      const proxima = new Set(anterior)
+      if (proxima.has(q.id)) { proxima.delete(q.id); layer.setStyle(estiloDaQuadra(q.status)) }
+      else { proxima.add(q.id); layer.setStyle(ESTILO_SELECIONADA) }
+      return proxima
+    })
   }, [])
 
   function abrirPainelQuadra(q: Quadra) {
-    setQuadraAtiva(q); setLadoAtivo(null); setPainelAberto(true)
+    setQuadraAtiva(q); setPainelAberto(true)
   }
 
   // ── Carregar quadras ─────────────────────────────────────────────────────────
@@ -238,11 +290,17 @@ export default function Mapa() {
     if (usuarioData) setUsuario(usuarioData)
 
     const { data: terrsData } = await supabase.from('territorios')
-      .select('id, nome, numero, geojson, publicadores, familias, link_maps').order('numero')
+      .select('id, nome, numero, geojson, link_maps').order('numero')
     setTerritorios(terrsData ?? [])
+    setTerritoriosCarregados(true)
 
     const { data: quadrasData } = await supabase.from('quadras').select('*')
     if (!quadrasData) return
+
+    // Depois de vários awaits, "m" pode já ter sido substituído/removido
+    // (StrictMode remonta em dev, ou o usuário navegou pra outra tela) —
+    // mexer nele agora quebraria o Leaflet.
+    if (mapInstanceRef.current !== m) return
 
     // Contornos dos territórios, numa camada abaixo das quadras
     territorioLayersRef.current.forEach((l) => m.removeLayer(l))
@@ -259,23 +317,23 @@ export default function Mapa() {
       layer.bindPopup(popupDoTerritorio(t, progresso, quadrasDoTerritorio.length), { maxWidth: 260 })
       // Tocar no território aproxima o mapa nas quadras dele
       layer.on('click', () => m.fitBounds(layer.getBounds(), { maxZoom: 17, padding: [24, 24] }))
+      ;(layer as any)._territorioId = t.id
       territorioLayersRef.current.push(layer)
     }
 
     layersRef.current.forEach((l) => m.removeLayer(l))
     layersRef.current = []
-    ladoLayersRef.current.forEach((l) => m.removeLayer(l))
-    ladoLayersRef.current = new Map()
 
     for (const q of quadrasData as Quadra[]) {
       if (!q.geojson) continue
-      const cores = CORES_STATUS[q.status] ?? CORES_STATUS['nao_iniciado']
-      const layer = L.geoJSON(q.geojson, {
-        style: { fillColor: cores.fill, fillOpacity: 0.45, color: cores.stroke, weight: 2 },
-      }).addTo(m)
-      layer.on('click', (e: any) => { L.DomEvent.stopPropagation(e); abrirPainelQuadra(q) })
+      const layer = L.geoJSON(q.geojson, { style: estiloDaQuadra(q.status) }).addTo(m)
+      ;(layer as any)._quadra = q
+      layer.on('click', (e: any) => {
+        L.DomEvent.stopPropagation(e)
+        if (modoSelecaoRef.current) { alternarSelecaoQuadra(q, layer); return }
+        abrirPainelQuadra(q)
+      })
       layersRef.current.push(layer)
-      if (q.lados?.length > 0) renderizarLados(m, q, abrirPainelLado)
     }
 
     const { data: pontosData } = await supabase
@@ -283,8 +341,10 @@ export default function Mapa() {
       .select('*, usuario:usuario_id(nome)')
       .order('criado_em', { ascending: false })
     setTodosPontos(pontosData ?? [])
+    if (mapInstanceRef.current !== m) return
     renderizarPontos(m, pontosData ?? [])
-  }, [renderizarLados, renderizarPontos, abrirPainelLado])
+    aplicarFiltroTerritorio()
+  }, [renderizarPontos, alternarSelecaoQuadra, aplicarFiltroTerritorio])
 
   // ── Inicializar mapa ─────────────────────────────────────────────────────────
   useEffect(() => {
@@ -315,13 +375,20 @@ export default function Mapa() {
     mapInstanceRef.current = map
     setMapInstance(map)
 
+    // O mapa pode ser removido (StrictMode remonta em dev, ou o usuário navega
+    // pra outra tela) antes dessas chamadas assíncronas responderem — sem essa
+    // flag, o .then()/callback tardio mexe num mapa já destruído e o Leaflet
+    // quebra tentando acessar panes/posições que não existem mais.
+    let cancelado = false
+
     supabase.from('configuracoes').select('lat, lng').eq('id', 1).single().then(({ data }) => {
+      if (cancelado) return
       if (data?.lat && data?.lng) map.setView([data.lat, data.lng], 14)
     })
 
     if (navigator.geolocation) {
       navigator.geolocation.getCurrentPosition(
-        (pos) => map.setView([pos.coords.latitude, pos.coords.longitude], 15),
+        (pos) => { if (!cancelado) map.setView([pos.coords.latitude, pos.coords.longitude], 15) },
         () => {}
       )
     }
@@ -348,6 +415,7 @@ export default function Mapa() {
     const t = setTimeout(() => map.invalidateSize(), 200)
 
     return () => {
+      cancelado = true
       clearTimeout(t)
       cancelAnimationFrame(raf)
       observador.disconnect()
@@ -357,50 +425,19 @@ export default function Mapa() {
     }
   }, [carregarQuadras])
 
-  // ── Status lado ──────────────────────────────────────────────────────────────
-  async function atualizarStatusLado(novoStatus: StatusQuadra) {
-    if (!quadraAtiva || !ladoAtivo || !usuario) return
-    setSalvando(true)
-    const novosLados = quadraAtiva.lados.map((l) =>
-      l.id === ladoAtivo.id ? { ...l, status: novoStatus } : l
-    )
-    const prog = calcularProgresso(novosLados)
-    let novoStatusQuadra: StatusQuadra = 'nao_iniciado'
-    if (prog === 100) novoStatusQuadra = 'concluido'
-    else if (prog > 50) novoStatusQuadra = 'em_andamento'
-    else if (prog > 0) novoStatusQuadra = 'parcial'
-
-    const { error } = await supabase.from('quadras')
-      .update({ lados: novosLados, status: novoStatusQuadra }).eq('id', quadraAtiva.id)
-    if (!error) {
-      await supabase.from('marcacoes').insert({
-        quadra_id: quadraAtiva.id, lado_id: ladoAtivo.id, usuario_id: usuario.id, status: novoStatus,
-      })
-      setQuadraAtiva({ ...quadraAtiva, lados: novosLados, status: novoStatusQuadra })
-      setLadoAtivo({ ...ladoAtivo, status: novoStatus })
-      const layer = ladoLayersRef.current.get(ladoAtivo.id)
-      if (layer) layer.setStyle({ color: CORES_STATUS[novoStatus].stroke })
-      mostrarFeedback('Status atualizado!')
-    }
-    setSalvando(false)
-  }
-
   // ── Status quadra ────────────────────────────────────────────────────────────
   async function atualizarStatusQuadra(novoStatus: StatusQuadra) {
     if (!quadraAtiva || !usuario) return
     setSalvando(true)
-    const novosLados = (quadraAtiva.lados ?? []).map((l) => ({ ...l, status: novoStatus }))
     const { error } = await supabase.from('quadras')
-      .update({ status: novoStatus, lados: novosLados }).eq('id', quadraAtiva.id)
+      .update({ status: novoStatus }).eq('id', quadraAtiva.id)
     if (!error) {
       await supabase.from('marcacoes').insert({
         quadra_id: quadraAtiva.id, usuario_id: usuario.id, status: novoStatus,
       })
-      setQuadraAtiva({ ...quadraAtiva, status: novoStatus, lados: novosLados })
-      novosLados.forEach((l) => {
-        const layer = ladoLayersRef.current.get(l.id)
-        if (layer) layer.setStyle({ color: CORES_STATUS[novoStatus].stroke })
-      })
+      setQuadraAtiva({ ...quadraAtiva, status: novoStatus })
+      const layer = layersRef.current.find((l: any) => l._quadra?.id === quadraAtiva.id)
+      if (layer) { layer._quadra = { ...layer._quadra, status: novoStatus }; layer.setStyle(estiloDaQuadra(novoStatus)) }
       mostrarFeedback('Quadra atualizada!')
     }
     setSalvando(false)
@@ -449,7 +486,7 @@ export default function Mapa() {
     }
     setSalvandoPonto(true)
     const { error } = await supabase.from('pontos_parada').insert({
-      quadra_id: quadraAtiva.id, lado_id: ladoAtivo?.id ?? null,
+      quadra_id: quadraAtiva.id,
       usuario_id: usuario.id, lat: pontoCoords.lat, lng: pontoCoords.lng,
       observacao: pontoObs.trim(),
       idioma: pontoIdioma.trim() || null,
@@ -542,10 +579,8 @@ export default function Mapa() {
     if (!pendingGeoJsonRef.current) return
     setSalvandoQuadra(true)
     const geojson = pendingGeoJsonRef.current
-    const coords: [number, number][] = geojson.geometry.coordinates[0]
-    const lados = gerarLados(coords)
     const { error } = await supabase.from('quadras').insert({
-      nome: novaQuadraNome.trim(), status: 'nao_iniciado', geojson, lados,
+      nome: novaQuadraNome.trim(), status: 'nao_iniciado', geojson,
       territorio_id: novaQuadraTerritorioId,
     })
     setSalvandoQuadra(false)
@@ -556,18 +591,105 @@ export default function Mapa() {
     } else { mostrarFeedback('Erro ao salvar quadra.') }
   }
 
+  // ── Seleção por área: agrupar quadras sem território de uma vez ────────────
+  useEffect(() => { modoSelecaoRef.current = modoSelecao }, [modoSelecao])
+  useEffect(() => { selecionadasRef.current = selecionadas }, [selecionadas])
+
+  // Arrasta um retângulo (via leaflet-draw); toda quadra sem território cujo
+  // limite cruza o retângulo entra na seleção. Reabre o desenho em seguida,
+  // pra dar pra marcar vários grupos sem clicar de novo no botão.
+  function iniciarRetanguloDeSelecao() {
+    const m = mapInstanceRef.current
+    const L = (window as any).L
+    if (!m || !L || !L.Draw) return
+    const drawer = new L.Draw.Rectangle(m, { shapeOptions: { color: '#6B3FD4', weight: 2, fillOpacity: 0.08 } })
+    drawer.enable()
+    drawSelecaoRef.current = drawer
+
+    m.once(L.Draw.Event.CREATED, (e: any) => {
+      const bounds = e.layer.getBounds()
+      const proxima = new Set(selecionadasRef.current)
+      layersRef.current.forEach((layer: any) => {
+        const q = layer._quadra as Quadra | undefined
+        if (!q || q.territorio_id) return
+        if (bounds.intersects(layer.getBounds())) {
+          proxima.add(q.id)
+          layer.setStyle(ESTILO_SELECIONADA)
+        }
+      })
+      setSelecionadas(proxima)
+      if (modoSelecaoRef.current) iniciarRetanguloDeSelecao()
+    })
+  }
+
+  function ativarSelecaoPorArea() {
+    const L = (window as any).L
+    if (!mapInstanceRef.current || !L || !L.Draw) return
+    setPainelAberto(false)
+    setModoSelecao(true)
+    iniciarRetanguloDeSelecao()
+  }
+
+  function sairDoModoSelecao() {
+    drawSelecaoRef.current?.disable()
+    drawSelecaoRef.current = null
+    layersRef.current.forEach((layer: any) => {
+      if (layer._quadra && selecionadasRef.current.has(layer._quadra.id)) {
+        layer.setStyle(estiloDaQuadra(layer._quadra.status))
+      }
+    })
+    setSelecionadas(new Set())
+    setTerritorioParaAtribuir('')
+    setModoSelecao(false)
+  }
+
+  async function atribuirSelecionadas() {
+    if (!territorioParaAtribuir || selecionadas.size === 0) return
+    setAtribuindo(true)
+    const { error } = await supabase.from('quadras')
+      .update({ territorio_id: territorioParaAtribuir })
+      .in('id', [...selecionadas])
+    setAtribuindo(false)
+    if (error) { mostrarFeedback('Erro ao atribuir as quadras.'); return }
+    const nomeTerr = territorios.find((t) => t.id === territorioParaAtribuir)?.nome ?? ''
+    mostrarFeedback(`${selecionadas.size} quadra(s) atribuída(s) a "${nomeTerr}"!`)
+    setSelecionadas(new Set())
+    setTerritorioParaAtribuir('')
+    await carregarQuadras()
+  }
+
   function fecharPainel() {
-    setPainelAberto(false); setQuadraAtiva(null); setLadoAtivo(null)
+    setPainelAberto(false); setQuadraAtiva(null)
     const m = mapInstanceRef.current
     if (m) m.getContainer().style.cursor = ''
   }
 
-  const progresso = quadraAtiva ? calcularProgresso(quadraAtiva.lados ?? []) : 0
   const coresAtivas = quadraAtiva ? (CORES_STATUS[quadraAtiva.status] ?? CORES_STATUS['nao_iniciado']) : null
 
   return (
     <div style={{ position: 'relative', width: '100%', height: '100%' }}>
       <div ref={mapRef} style={{ width: '100%', height: '100%' }} />
+
+      {/* Filtro: ver só um território */}
+      {!modoDesenho && !modalCriar && !modalPonto && !painelOSM && !modoSelecao && territoriosCarregados && territorios.length > 0 && (
+        <select
+          value={territorioFiltro}
+          onChange={(e) => setTerritorioFiltro(e.target.value)}
+          title="Ver só um território"
+          style={{
+            position: 'absolute', top: 10, left: 10, zIndex: 900,
+            padding: '9px 12px', fontSize: 14, fontWeight: 500,
+            border: '1px solid #DDD', borderRadius: 8, background: '#fff', color: '#1A1A1A',
+            boxShadow: '0 1px 4px rgba(0,0,0,0.15)', maxWidth: 220,
+            cursor: 'pointer',
+          }}
+        >
+          <option value="">🗺️ Todos os territórios</option>
+          {territorios.map((t) => (
+            <option key={t.id} value={t.id}>#{t.numero} — {t.nome}</option>
+          ))}
+        </select>
+      )}
 
       {/* Toast */}
       {feedback && (
@@ -582,7 +704,7 @@ export default function Mapa() {
       )}
 
       {/* Centralizar na localização atual */}
-      {!modoDesenho && !modalCriar && !modalPonto && !painelOSM && (
+      {!modoDesenho && !modalCriar && !modalPonto && !painelOSM && !modoSelecao && (
         <button
           onClick={centralizarLocalizacaoAtual}
           disabled={localizando}
@@ -601,26 +723,67 @@ export default function Mapa() {
         </button>
       )}
 
-      {/* Botões ST */}
-      {podeGerenciarQuadras && !painelAberto && !modoDesenho && !modalCriar && !painelOSM && (
+      {/* Botão de ações ST: um único FAB que abre um menu curto, em vez de
+          três botões largos empilhados brigando com o resto da tela */}
+      {podeGerenciarQuadras && !painelAberto && !modoDesenho && !modalCriar && !painelOSM && !modoSelecao && (
+        <div style={{ position: 'absolute', bottom: 96, left: 16, zIndex: 900, display: 'flex', flexDirection: 'column', alignItems: 'flex-start', gap: 10 }}>
+          {menuAcoesAberto && (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+              <BotaoAcaoMapa icone="🔲" texto="Selecionar p/ território" cor="#6B3FD4"
+                onClick={() => { setMenuAcoesAberto(false); ativarSelecaoPorArea() }} />
+              <BotaoAcaoMapa icone="🌐" texto="Gerar quadras pelas ruas" cor="#378ADD"
+                onClick={() => { setMenuAcoesAberto(false); setPainelOSM(true) }} />
+              <BotaoAcaoMapa icone="✏️" texto="Desenhar quadra" cor="#3BAD68"
+                onClick={() => { setMenuAcoesAberto(false); ativarDesenho() }} />
+            </div>
+          )}
+          <button onClick={() => setMenuAcoesAberto((v) => !v)} title="Ações de território" style={{
+            width: 52, height: 52, borderRadius: '50%', background: '#1A1A1A', color: '#fff',
+            border: 'none', fontSize: 24, lineHeight: '52px', textAlign: 'center', padding: 0,
+            cursor: 'pointer', boxShadow: '0 2px 10px rgba(0,0,0,0.3)',
+            transform: menuAcoesAberto ? 'rotate(45deg)' : 'none', transition: 'transform 0.15s ease',
+          }}>
+            +
+          </button>
+        </div>
+      )}
+
+      {/* Painel de seleção por área */}
+      {modoSelecao && (
         <div style={{
-          position: 'absolute', bottom: 160, left: 16,
-          display: 'flex', flexDirection: 'column', gap: 8, zIndex: 900,
+          position: 'absolute', bottom: 16, left: 16, right: 16, zIndex: 1100,
+          background: '#FFFFFF', borderRadius: 14, padding: '14px 16px',
+          boxShadow: '0 4px 20px rgba(0,0,0,0.18)',
+          display: 'flex', flexDirection: 'column', gap: 10, maxWidth: 420, margin: '0 auto',
         }}>
-          <button onClick={ativarDesenho} style={{
-            background: '#3BAD68', color: '#fff', border: 'none', borderRadius: 12,
-            padding: '12px 18px', fontSize: 15, fontWeight: 600,
-            cursor: 'pointer', boxShadow: '0 2px 8px rgba(0,0,0,0.2)',
-          }}>
-            ✏️ Desenhar quadra
-          </button>
-          <button onClick={() => setPainelOSM(true)} style={{
-            background: '#378ADD', color: '#fff', border: 'none', borderRadius: 12,
-            padding: '12px 18px', fontSize: 15, fontWeight: 600,
-            cursor: 'pointer', boxShadow: '0 2px 8px rgba(0,0,0,0.2)',
-          }}>
-            🌐 Gerar quadras pelas ruas
-          </button>
+          <div style={{ fontSize: 13, color: '#444', lineHeight: 1.5 }}>
+            🔲 Arraste um retângulo no mapa pra selecionar quadras <strong>sem território</strong>. Pode arrastar várias vezes pra juntar mais de uma área. Clicar numa quadra também alterna ela na seleção.
+          </div>
+          <div style={{ fontSize: 13, fontWeight: 600, color: '#6B3FD4' }}>
+            {selecionadas.size} quadra{selecionadas.size !== 1 ? 's' : ''} selecionada{selecionadas.size !== 1 ? 's' : ''}
+          </div>
+          <select value={territorioParaAtribuir} onChange={(e) => setTerritorioParaAtribuir(e.target.value)}
+            disabled={selecionadas.size === 0}
+            style={{ width: '100%', padding: '11px 14px', fontSize: 14, border: '1px solid #DDD', borderRadius: 8, background: '#FAFAFA', outline: 'none' }}>
+            <option value="">— Atribuir ao território —</option>
+            {territorios.map((t) => <option key={t.id} value={t.id}>#{t.numero} — {t.nome}</option>)}
+          </select>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <button onClick={sairDoModoSelecao} style={{
+              flex: 1, padding: '12px', fontSize: 14, fontWeight: 500,
+              background: '#F7F7F7', color: '#555', border: '0.5px solid #DDD', borderRadius: 10, cursor: 'pointer',
+            }}>
+              Sair
+            </button>
+            <button onClick={() => void atribuirSelecionadas()} disabled={atribuindo || !territorioParaAtribuir || selecionadas.size === 0} style={{
+              flex: 2, padding: '12px', fontSize: 14, fontWeight: 600,
+              background: (atribuindo || !territorioParaAtribuir || selecionadas.size === 0) ? '#CCCCCC' : '#6B3FD4',
+              color: '#fff', border: 'none', borderRadius: 10,
+              cursor: (atribuindo || !territorioParaAtribuir || selecionadas.size === 0) ? 'not-allowed' : 'pointer',
+            }}>
+              {atribuindo ? 'Atribuindo…' : `✅ Atribuir ${selecionadas.size || ''}`}
+            </button>
+          </div>
         </div>
       )}
 
@@ -651,7 +814,9 @@ export default function Mapa() {
               </div>
               <div>
                 <label style={{ display: 'block', fontSize: 13, fontWeight: 500, color: '#444', marginBottom: 6 }}>Território</label>
-                {territorios.length === 0 ? (
+                {!territoriosCarregados ? (
+                  <p style={{ color: '#888', fontSize: 14 }}>Carregando territórios…</p>
+                ) : territorios.length === 0 ? (
                   <p style={{ color: '#E05050', fontSize: 14 }}>⚠️ Crie um território primeiro.</p>
                 ) : (
                   <select value={novaQuadraTerritorioId} onChange={(e) => setNovaQuadraTerritorioId(e.target.value)}
@@ -751,79 +916,50 @@ export default function Mapa() {
             <div style={{ display: 'flex', alignItems: 'flex-start', gap: 10, marginBottom: 16 }}>
               <div style={{ flex: 1 }}>
                 <h2 style={{ fontSize: 20, fontWeight: 700, color: '#1A1A1A', margin: 0 }}>
-                  {ladoAtivo ? `Lado ${ladoAtivo.indice + 1}` : quadraAtiva.nome}
+                  {quadraAtiva.nome}
                 </h2>
-                {ladoAtivo && (
-                  <button onClick={() => setLadoAtivo(null)} style={{ fontSize: 13, color: '#378ADD', background: 'none', border: 'none', cursor: 'pointer', padding: 0, marginTop: 2 }}>
-                    ← Voltar para {quadraAtiva.nome}
-                  </button>
-                )}
               </div>
               <button onClick={fecharPainel} style={{ background: '#F7F7F7', border: 'none', borderRadius: 8, padding: '6px 10px', fontSize: 18, cursor: 'pointer', color: '#666' }}>✕</button>
             </div>
 
             {/* Badge status */}
-            <div style={{
-              display: 'inline-flex', alignItems: 'center', gap: 6,
-              background: coresAtivas?.fill ?? '#EEE', border: `1px solid ${coresAtivas?.stroke ?? '#CCC'}`,
-              borderRadius: 20, padding: '4px 12px', marginBottom: 16,
-            }}>
-              <span style={{ width: 8, height: 8, borderRadius: '50%', background: coresAtivas?.stroke ?? '#999', display: 'inline-block' }} />
-              <span style={{ fontSize: 13, fontWeight: 500, color: '#333' }}>
-                {ladoAtivo ? (CORES_STATUS[ladoAtivo.status]?.label ?? ladoAtivo.status) : (CORES_STATUS[quadraAtiva.status]?.label ?? quadraAtiva.status)}
-              </span>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 16 }}>
+              <div style={{
+                display: 'inline-flex', alignItems: 'center', gap: 6,
+                background: coresAtivas?.fill ?? '#EEE', border: `1px solid ${coresAtivas?.stroke ?? '#CCC'}`,
+                borderRadius: 20, padding: '4px 12px',
+              }}>
+                <span style={{ width: 8, height: 8, borderRadius: '50%', background: coresAtivas?.stroke ?? '#999', display: 'inline-block' }} />
+                <span style={{ fontSize: 13, fontWeight: 500, color: '#333' }}>
+                  {CORES_STATUS[quadraAtiva.status]?.label ?? quadraAtiva.status}
+                </span>
+              </div>
+              {!quadraAtiva.territorio_id && (
+                <div style={{
+                  display: 'inline-flex', alignItems: 'center', gap: 6,
+                  background: '#FFF8E7', border: '1px solid #F0C060',
+                  borderRadius: 20, padding: '4px 12px',
+                }}>
+                  <span style={{ fontSize: 13, fontWeight: 500, color: '#412402' }}>🏙️ Sem território</span>
+                </div>
+              )}
             </div>
 
-            {/* Progresso */}
-            {!ladoAtivo && quadraAtiva.lados?.length > 0 && (
-              <div style={{ marginBottom: 18 }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, color: '#666', marginBottom: 4 }}>
-                  <span>{quadraAtiva.lados.length} lados</span>
-                  <span style={{ fontWeight: 600, color: '#1A1A1A' }}>{progresso}% concluído</span>
-                </div>
-                <div style={{ height: 8, background: '#EEE', borderRadius: 4, overflow: 'hidden' }}>
-                  <div style={{ height: '100%', width: `${progresso}%`, background: progresso === 100 ? '#3BAD68' : '#378ADD', borderRadius: 4, transition: 'width 0.4s' }} />
-                </div>
-              </div>
-            )}
-
-            {/* Lados — grade compacta em vez de lista de linhas */}
-            {!ladoAtivo && quadraAtiva.lados?.length > 0 && (
-              <div style={{ marginBottom: 18 }}>
-                <p style={{ fontSize: 13, color: '#666', marginBottom: 8, fontWeight: 500 }}>Selecione um lado:</p>
-                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(52px, 1fr))', gap: 8 }}>
-                  {quadraAtiva.lados.map((l) => {
-                    const c = CORES_STATUS[l.status] ?? CORES_STATUS['nao_iniciado']
-                    return (
-                      <button key={l.id} onClick={() => abrirPainelLado(quadraAtiva, l)} title={`Lado ${l.indice + 1} — ${c.label}`} style={{
-                        display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
-                        gap: 2, padding: '8px 4px', borderRadius: 10,
-                        background: c.fill, border: `1.5px solid ${c.stroke}`,
-                        cursor: 'pointer', minHeight: 48,
-                      }}>
-                        <span style={{ fontSize: 13, fontWeight: 700, color: '#1A1A1A' }}>{l.indice + 1}</span>
-                      </button>
-                    )
-                  })}
-                </div>
-              </div>
-            )}
-
-            {/* Status — um único seletor no lugar da grade de 5 botões */}
+            {/* Status — um único seletor pra quadra inteira */}
             {podeMarcar && (
               <>
                 <div style={{ marginBottom: 16 }}>
                   <label style={{ display: 'block', fontSize: 13, color: '#666', marginBottom: 8, fontWeight: 500 }}>
-                    {ladoAtivo ? 'Marcar este lado como:' : 'Marcar quadra inteira como:'}
+                    Marcar quadra como:
                   </label>
                   <select
-                    value={ladoAtivo ? ladoAtivo.status : quadraAtiva.status}
+                    value={quadraAtiva.status}
                     disabled={salvando}
-                    onChange={(e) => void (ladoAtivo ? atualizarStatusLado(e.target.value as StatusQuadra) : atualizarStatusQuadra(e.target.value as StatusQuadra))}
+                    onChange={(e) => void atualizarStatusQuadra(e.target.value as StatusQuadra)}
                     style={{
                       width: '100%', padding: '14px 16px', borderRadius: 10, fontSize: 15, fontWeight: 700,
-                      border: `2px solid ${(ladoAtivo ? CORES_STATUS[ladoAtivo.status] : CORES_STATUS[quadraAtiva.status])?.stroke ?? '#ccc'}`,
-                      background: (ladoAtivo ? CORES_STATUS[ladoAtivo.status] : CORES_STATUS[quadraAtiva.status])?.fill ?? '#eee',
+                      border: `2px solid ${CORES_STATUS[quadraAtiva.status]?.stroke ?? '#ccc'}`,
+                      background: CORES_STATUS[quadraAtiva.status]?.fill ?? '#eee',
                       color: '#1A1A1A', cursor: salvando ? 'not-allowed' : 'pointer',
                     }}
                   >
@@ -903,7 +1039,7 @@ export default function Mapa() {
             )}
 
             {/* Excluir quadra — só ST */}
-            {podeGerenciarQuadras && !ladoAtivo && (
+            {podeGerenciarQuadras && (
               <>
                 <div style={{ height: 1, background: '#EEE', margin: '12px 0' }} />
                 <button onClick={() => {

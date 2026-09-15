@@ -30,28 +30,36 @@ export default function MeuTerritorioPage() {
   const [observacoes, setObservacoes] = useState<Observacao[]>([])
   const [carregandoDados, setCarregandoDados] = useState(true)
 
-  // Territórios onde o usuário tem (ou teve) quadra designada
+  // Territórios do grupo do dirigente: acha o SG do grupo dele e pega
+  // todos os territórios designados a esse SG (não precisa mais de
+  // designação quadra a quadra — entrar no grupo já dá acesso a tudo).
   useEffect(() => {
     if (!usuario) return
-    supabase.from('designacoes')
-      .select('territorio_id, territorio:territorio_id(id, nome, numero, bairro, status, geojson, criado_por, criado_em)')
-      .eq('usuario_id', usuario.id)
-      .not('quadra_id', 'is', null)
-      .then(({ data }) => {
-        const vistos = new Set<string>()
-        const lista: Territorio[] = []
-        for (const d of (data ?? []) as unknown as { territorio: Territorio | null }[]) {
-          if (d.territorio && !vistos.has(d.territorio.id)) {
-            vistos.add(d.territorio.id)
-            lista.push(d.territorio)
-          }
-        }
-        lista.sort((a, b) => Number(a.numero) - Number(b.numero))
-        setTerritorios(lista)
+    if (usuario.perfil !== 'dirigente') { setTerritorios([]); return }
 
-        const salvo = localStorage.getItem(CHAVE_ULTIMO_TERRITORIO)
-        const valido = salvo && lista.some((t) => t.id === salvo)
-        setTerritorioId(valido ? salvo! : (lista[0]?.id ?? ''))
+    supabase.from('membros_grupo')
+      .select('sg_id')
+      .eq('dirigente_id', usuario.id)
+      .is('data_fim', null)
+      .maybeSingle()
+      .then(({ data: membro }) => {
+        if (!membro?.sg_id) { setTerritorios([]); return }
+
+        supabase.from('designacoes')
+          .select('territorio:territorio_id(id, nome, numero, bairro, status, geojson, criado_por, criado_em)')
+          .eq('usuario_id', membro.sg_id)
+          .is('data_fim', null)
+          .then(({ data }) => {
+            const lista = ((data ?? []) as unknown as { territorio: Territorio | null }[])
+              .map((d) => d.territorio)
+              .filter((t): t is Territorio => !!t)
+              .sort((a, b) => Number(a.numero) - Number(b.numero))
+            setTerritorios(lista)
+
+            const salvo = localStorage.getItem(CHAVE_ULTIMO_TERRITORIO)
+            const valido = salvo && lista.some((t) => t.id === salvo)
+            setTerritorioId(valido ? salvo! : (lista[0]?.id ?? ''))
+          })
       })
   }, [usuario])
 
@@ -107,7 +115,7 @@ export default function MeuTerritorioPage() {
 
       {territorios.length === 0 ? (
         <p style={{ textAlign: 'center', color: '#888', padding: 40 }}>
-          Você ainda não tem nenhuma quadra designada em nenhum território.
+          Você ainda não foi adicionado a um grupo, ou seu grupo ainda não tem território designado.
         </p>
       ) : (
         <>

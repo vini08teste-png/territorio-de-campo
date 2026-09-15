@@ -13,7 +13,6 @@ interface Quadra {
   id: string
   nome: string
   status: StatusQuadra
-  lados: { status: StatusQuadra }[]
   territorio_id: string
 }
 
@@ -44,13 +43,7 @@ const PESO: Record<StatusQuadra, number> = {
 
 function calcularProgresso(quadras: Quadra[]): number {
   if (!quadras.length) return 0
-  const soma = quadras.reduce((acc, q) => {
-    if (q.lados?.length) {
-      const p = q.lados.reduce((s, l) => s + (PESO[l.status] ?? 0), 0) / q.lados.length
-      return acc + p
-    }
-    return acc + (PESO[q.status] ?? 0)
-  }, 0)
+  const soma = quadras.reduce((acc, q) => acc + (PESO[q.status] ?? 0), 0)
   return Math.round((soma / quadras.length) * 100)
 }
 
