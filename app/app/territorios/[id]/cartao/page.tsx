@@ -51,7 +51,7 @@ export default function CartaoTerritorioPage({ params }: { params: Promise<{ id:
       if (!q.geojson) return
       const cores = CORES_STATUS[q.status] ?? CORES_STATUS['nao_iniciado']
       const layer = L.geoJSON(q.geojson, {
-        style: { color: cores.stroke, weight: 2, fillColor: cores.fill, fillOpacity: 0.12 },
+        style: { color: cores.stroke, weight: 2, fillColor: cores.fill, fillOpacity: 0.06 },
       }).addTo(map)
       const centro = layer.getBounds().getCenter()
       L.marker(centro, {
@@ -66,10 +66,10 @@ export default function CartaoTerritorioPage({ params }: { params: Promise<{ id:
     })
 
     if (camadas.length > 0) {
-      map.fitBounds(L.featureGroup(camadas).getBounds(), { padding: [4, 4], maxZoom: 19 })
+      map.fitBounds(L.featureGroup(camadas).getBounds(), { padding: [0, 0], maxZoom: 20 })
     } else if (territorio?.geojson) {
       const layer = L.geoJSON(territorio.geojson).addTo(map)
-      map.fitBounds(layer.getBounds(), { padding: [4, 4], maxZoom: 19 })
+      map.fitBounds(layer.getBounds(), { padding: [0, 0], maxZoom: 20 })
     } else {
       map.setView([-6.52, -49.85], 16)
     }
@@ -124,7 +124,7 @@ export default function CartaoTerritorioPage({ params }: { params: Promise<{ id:
             )}
           </div>
 
-          <div ref={mapRef} style={{ width: '100%', height: 640, border: '1px solid #DDD', borderRadius: 8, marginBottom: 24 }} />
+          <div ref={mapRef} style={{ width: '100%', height: 760, border: '1px solid #DDD', borderRadius: 8, marginBottom: 24 }} />
 
           {quadras.length === 0 ? (
             <p style={{ textAlign: 'center', color: '#999', fontSize: 14 }}>
