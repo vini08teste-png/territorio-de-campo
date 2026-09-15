@@ -35,6 +35,17 @@ interface Territorio {
   link_maps: string | null
 }
 
+interface AtividadeRecente {
+  territorioId: string
+  territorioNumero: string
+  territorioNome: string
+  quadraId: string
+  quadraNome: string
+  grupoNome: string | null
+  usuarioNome: string
+  criadoEm: string
+}
+
 interface PontoParada {
   id: string
   quadra_id: string
@@ -139,8 +150,8 @@ export default function Mapa() {
   const [territorioFiltro, setTerritorioFiltro] = useState('')
   const [quadraAtiva, setQuadraAtiva] = useState<Quadra | null>(null)
   const [painelAberto, setPainelAberto] = useState(false)
-  const [ultimoTrabalho, setUltimoTrabalho] = useState<{ quadraId: string; quadraNome: string; territorioId: string } | null>(null)
-  const [ultimoTrabalhoFechado, setUltimoTrabalhoFechado] = useState(false)
+  const [atividadesRecentes, setAtividadesRecentes] = useState<AtividadeRecente[]>([])
+  const [atividadesRecentesFechado, setAtividadesRecentesFechado] = useState(false)
   const [modoDesenho, setModoDesenho] = useState(false)
   const [desenhandoContornoDe, setDesenhandoContornoDe] = useState<Territorio | null>(null)
   const [salvando, setSalvando] = useState(false)
@@ -268,35 +279,70 @@ export default function Mapa() {
     if (layer) m.fitBounds(layer.getBounds(), { maxZoom: 17, padding: [24, 24] })
   }, [territorioFiltro, aplicarFiltroTerritorio])
 
-  // "Onde parei": última quadra que esse usuário marcou, pra retomar rápido
-  // em vez de procurar no mapa de novo.
+  // "Onde parou": territórios com atividade recente (RLS já restringe às
+  // marcações que esse usuário pode ver — ou seja, da própria congregação,
+  // ou tudo se for admin). Um por território (a marcação mais recente dele),
+  // mostrando o grupo responsável — ou a congregação, se o território ainda
+  // não tem Sup. de Grupo designado.
   useEffect(() => {
     if (!usuario) return
     let cancelado = false
-    supabase.from('marcacoes')
-      .select('quadra_id, criado_em, quadras(id, nome, territorio_id)')
-      .eq('usuario_id', usuario.id)
-      .order('criado_em', { ascending: false })
-      .limit(1)
-      .maybeSingle()
-      .then(({ data }) => {
-        if (cancelado || !data) return
-        const q = (data as any).quadras as { id: string; nome: string; territorio_id: string | null } | null
-        if (!q?.territorio_id) return
-        setUltimoTrabalho({ quadraId: q.id, quadraNome: q.nome, territorioId: q.territorio_id })
-      })
+
+    Promise.all([
+      supabase.from('marcacoes')
+        .select('criado_em, usuario:usuario_id(nome), quadras(id, nome, territorio_id, territorios(id, nome, numero, congregacao))')
+        .order('criado_em', { ascending: false })
+        .limit(30),
+      supabase.from('designacoes')
+        .select('territorio_id, usuario:usuario_id(nome)')
+        .is('quadra_id', null)
+        .is('data_fim', null),
+    ]).then(([m, d]) => {
+      if (cancelado) return
+
+      const sgPorTerritorio = new Map<string, string>()
+      for (const row of (d.data ?? []) as any[]) {
+        if (row.territorio_id) sgPorTerritorio.set(row.territorio_id, row.usuario?.nome ?? '—')
+      }
+
+      const porTerritorio = new Map<string, AtividadeRecente>()
+      for (const row of (m.data ?? []) as any[]) {
+        const q = row.quadras
+        const t = q?.territorios
+        if (!q || !t || porTerritorio.has(t.id)) continue
+        porTerritorio.set(t.id, {
+          territorioId: t.id, territorioNumero: t.numero, territorioNome: t.nome,
+          quadraId: q.id, quadraNome: q.nome,
+          grupoNome: sgPorTerritorio.get(t.id) ?? (t.congregacao ? `Congregação ${t.congregacao}` : null),
+          usuarioNome: row.usuario?.nome ?? '—',
+          criadoEm: row.criado_em,
+        })
+      }
+      setAtividadesRecentes(Array.from(porTerritorio.values()).slice(0, 5))
+    })
+
     return () => { cancelado = true }
   }, [usuario])
 
-  function continuarDeOndeParou() {
-    if (!ultimoTrabalho) return
+  function continuarDeOndeParou(atividade: AtividadeRecente) {
     const m = mapInstanceRef.current
-    const layer = layersRef.current.find((l: any) => l._quadra?.id === ultimoTrabalho.quadraId)
-    setTerritorioFiltro(ultimoTrabalho.territorioId)
+    const layer = layersRef.current.find((l: any) => l._quadra?.id === atividade.quadraId)
+    setTerritorioFiltro(atividade.territorioId)
     if (layer && m) {
       m.fitBounds(layer.getBounds(), { maxZoom: 18, padding: [40, 40] })
       abrirPainelQuadra(layer._quadra)
     }
+  }
+
+  function formatarAtualizadoEm(iso: string) {
+    const diffMs = Date.now() - new Date(iso).getTime()
+    const minutos = Math.round(diffMs / 60000)
+    if (minutos < 1) return 'agora'
+    if (minutos < 60) return `há ${minutos} min`
+    const horas = Math.round(minutos / 60)
+    if (horas < 24) return `há ${horas}h`
+    const dias = Math.round(horas / 24)
+    return `há ${dias}d`
   }
 
   // ── Seleção por área ─────────────────────────────────────────────────────────
@@ -800,32 +846,43 @@ export default function Mapa() {
         </div>
       )}
 
-      {/* Onde parei */}
-      {!modoDesenho && !modalCriar && !modalPonto && !painelOSM && !modoSelecao && !painelAberto && !desenhandoContornoDe && ultimoTrabalho && !ultimoTrabalhoFechado && (
+      {/* Onde parou — atividade recente da congregação */}
+      {!modoDesenho && !modalCriar && !modalPonto && !painelOSM && !modoSelecao && !painelAberto && !desenhandoContornoDe && atividadesRecentes.length > 0 && !atividadesRecentesFechado && (
         <div style={{
           position: 'absolute', top: 10, right: 10, zIndex: 900,
-          display: 'flex', alignItems: 'center', gap: 6,
           background: '#fff', border: '1px solid #DDD', borderRadius: 8,
-          boxShadow: '0 1px 4px rgba(0,0,0,0.15)', padding: '6px 6px 6px 12px',
-          maxWidth: 240,
+          boxShadow: '0 1px 4px rgba(0,0,0,0.15)', padding: '8px 6px 8px 12px',
+          maxWidth: 260,
         }}>
-          <button
-            onClick={continuarDeOndeParou}
-            style={{
-              display: 'flex', flexDirection: 'column', alignItems: 'flex-start', gap: 1,
-              background: 'none', border: 'none', cursor: 'pointer', padding: 0, textAlign: 'left',
-            }}
-          >
-            <span style={{ fontSize: 11, color: '#888', fontWeight: 500 }}>▶ Continuar de onde parei</span>
-            <span style={{ fontSize: 13, color: '#1A1A1A', fontWeight: 700 }}>{ultimoTrabalho.quadraNome}</span>
-          </button>
-          <button
-            onClick={() => setUltimoTrabalhoFechado(true)}
-            title="Fechar"
-            style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#AAA', fontSize: 14, padding: '4px 6px', flexShrink: 0 }}
-          >
-            ✕
-          </button>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 4 }}>
+            <span style={{ fontSize: 11, color: '#888', fontWeight: 600, flex: 1 }}>
+              ▶ {atividadesRecentes.length > 1 ? 'Trabalhando agora' : 'Continuar de onde parou'}
+            </span>
+            <button
+              onClick={() => setAtividadesRecentesFechado(true)}
+              title="Fechar"
+              style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#AAA', fontSize: 14, padding: '2px 4px', flexShrink: 0 }}
+            >
+              ✕
+            </button>
+          </div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+            {atividadesRecentes.map((a) => (
+              <button
+                key={a.territorioId}
+                onClick={() => continuarDeOndeParou(a)}
+                style={{
+                  display: 'flex', flexDirection: 'column', alignItems: 'flex-start', gap: 1,
+                  background: 'none', border: 'none', cursor: 'pointer', padding: '4px 0', textAlign: 'left',
+                  borderTop: '1px solid #F0F0F0',
+                }}
+              >
+                <span style={{ fontSize: 13, color: '#1A1A1A', fontWeight: 700 }}>#{a.territorioNumero} — {a.territorioNome}</span>
+                <span style={{ fontSize: 11, color: '#666' }}>{a.grupoNome ?? 'Sem grupo'} · {a.usuarioNome}</span>
+                <span style={{ fontSize: 11, color: '#AAA' }}>{a.quadraNome} · {formatarAtualizadoEm(a.criadoEm)}</span>
+              </button>
+            ))}
+          </div>
         </div>
       )}
 
