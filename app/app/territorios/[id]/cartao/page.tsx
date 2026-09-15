@@ -98,7 +98,7 @@ export default function CartaoTerritorioPage({ params }: { params: Promise<{ id:
           .nao-imprimir { display: none !important; }
         }
       `}</style>
-      <div style={{ padding: '1.5rem 1rem 4rem', maxWidth: 900, margin: '0 auto' }}>
+      <div style={{ padding: '1.5rem 1rem 4rem', maxWidth: 1100, margin: '0 auto' }}>
         <div className="nao-imprimir" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20, gap: 8, flexWrap: 'wrap' }}>
           <button onClick={() => router.push('/app/territorios')} style={{
             padding: '10px 16px', fontSize: 14, fontWeight: 500, background: '#F7F7F7', color: '#555',
@@ -124,7 +124,7 @@ export default function CartaoTerritorioPage({ params }: { params: Promise<{ id:
             )}
           </div>
 
-          <div ref={mapRef} style={{ width: '100%', height: 420, border: '1px solid #DDD', borderRadius: 8, marginBottom: 24 }} />
+          <div ref={mapRef} style={{ width: '100%', height: 640, border: '1px solid #DDD', borderRadius: 8, marginBottom: 24 }} />
 
           {quadras.length === 0 ? (
             <p style={{ textAlign: 'center', color: '#999', fontSize: 14 }}>
