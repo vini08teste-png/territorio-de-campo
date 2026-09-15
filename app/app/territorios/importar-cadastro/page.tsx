@@ -19,7 +19,7 @@ import {
   ajustarTransformacao, erroMedioMetros, transformarAnel,
   type PontoControle, type Transformacao,
 } from '@/lib/calibracaoPdf'
-import { centroDoContorno } from '@/lib/territorio'
+import { areaEmMetros, centroDoContorno } from '@/lib/territorio'
 
 interface QuadraExtraida {
   anelPdf: [number, number][]
@@ -53,6 +53,30 @@ interface TerritorioDb {
 interface QuadraDb {
   territorio_id: string | null
   geojson: unknown
+}
+
+// Centroide de um anel 2D genérico (mesmo cálculo de centroDoContorno, mas
+// direto em cima de pontos crus — serve tanto pra coordenada real quanto
+// pro espaço em pixels/pontos do PDF).
+function centroideAnel2D(anel: [number, number][]): [number, number] {
+  let area = 0
+  for (let i = 0; i < anel.length - 1; i++) {
+    area += anel[i][0] * anel[i + 1][1] - anel[i + 1][0] * anel[i][1]
+  }
+  area /= 2
+  if (Math.abs(area) < 1e-9) {
+    const mx = anel.reduce((s, p) => s + p[0], 0) / anel.length
+    const my = anel.reduce((s, p) => s + p[1], 0) / anel.length
+    return [mx, my]
+  }
+  let cx = 0
+  let cy = 0
+  for (let i = 0; i < anel.length - 1; i++) {
+    const f = anel[i][0] * anel[i + 1][1] - anel[i + 1][0] * anel[i][1]
+    cx += (anel[i][0] + anel[i + 1][0]) * f
+    cy += (anel[i][1] + anel[i + 1][1]) * f
+  }
+  return [cx / (6 * area), cy / (6 * area)]
 }
 
 // Compara "Alto Bonito", "ALTO BONITO", "Alto  Bonito" etc. como iguais.
@@ -164,18 +188,71 @@ export default function ImportarCadastroPage() {
     return mapa
   }, [territoriosDb])
 
-  // Pontos de controle sugeridos casando bairro do PDF ↔ território/bairro
-  // já cadastrado pelo nome, sem precisar clicar na mão.
+  // Quadras reais (com centro + área em m²) agrupadas por território — usadas
+  // pra casar quadra a quadra, não só o centro do bairro inteiro.
+  const quadrasReaisPorTerritorio = useMemo(() => {
+    const mapa = new Map<string, { centro: [number, number]; area: number }[]>()
+    for (const q of quadrasDb) {
+      if (!q.territorio_id) continue
+      const centro = centroDoContorno(q.geojson)
+      const area = areaEmMetros(q.geojson)
+      if (!centro || !area) continue
+      const lista = mapa.get(q.territorio_id) ?? []
+      lista.push({ centro, area })
+      mapa.set(q.territorio_id, lista)
+    }
+    return mapa
+  }, [quadrasDb])
+
+  // Cada quadra extraída do PDF, com o centro dela já calculado no espaço do PDF.
+  const quadrasPdfComCentro = useMemo(() => {
+    return (dados?.quadras ?? []).map((q) => ({ ...q, centro: centroideAnel2D(q.anelPdf) }))
+  }, [dados])
+
+  // Pontos de controle sugeridos: um pelo centro do bairro (casando pelo
+  // nome) e, quando o território já tem quadras desenhadas, mais um por
+  // quadra — casando pela área (em m², já convertida pelo script de
+  // extração) entre as quadras reais e as quadras do PDF perto do bairro.
   const pontosAutomaticos = useMemo<PontoControle[]>(() => {
     if (!dados) return []
     const resultado: PontoControle[] = []
+    const raioPdf = 400 / (dados.metrosPorPonto || 1) // ~400m ao redor do bairro, em unidades do PDF
+    const MAX_QUADRAS_POR_BAIRRO = 8
+
     for (const b of dados.bairros) {
       const terrId = territorioPorNomeNormalizado.get(normalizarNome(b.nome))
-      const centro = terrId ? centroPorTerritorio.get(terrId) : undefined
-      if (centro) resultado.push({ pdf: b.centroPdf, real: centro })
+      if (!terrId) continue
+
+      const centroTerritorio = centroPorTerritorio.get(terrId)
+      if (centroTerritorio) resultado.push({ pdf: b.centroPdf, real: centroTerritorio })
+
+      const reais = quadrasReaisPorTerritorio.get(terrId)
+      if (!reais || reais.length === 0) continue
+
+      const candidatas = quadrasPdfComCentro
+        .filter((q) => Math.hypot(q.centro[0] - b.centroPdf[0], q.centro[1] - b.centroPdf[1]) <= raioPdf)
+      const usadas = new Set<number>()
+
+      let adicionadas = 0
+      for (const real of [...reais].sort((a, c) => c.area - a.area)) {
+        if (adicionadas >= MAX_QUADRAS_POR_BAIRRO) break
+        let melhorIdx = -1
+        let melhorDiff = Infinity
+        candidatas.forEach((c, idx) => {
+          if (usadas.has(idx)) return
+          const diff = Math.abs(c.areaM2 - real.area)
+          if (diff < melhorDiff) { melhorDiff = diff; melhorIdx = idx }
+        })
+        if (melhorIdx === -1) break
+        const razao = candidatas[melhorIdx].areaM2 / real.area
+        if (razao < 0.4 || razao > 2.5) continue // área bateu longe demais — não é a mesma quadra
+        usadas.add(melhorIdx)
+        resultado.push({ pdf: candidatas[melhorIdx].centro, real: real.centro })
+        adicionadas++
+      }
     }
     return resultado
-  }, [dados, territorioPorNomeNormalizado, centroPorTerritorio])
+  }, [dados, territorioPorNomeNormalizado, centroPorTerritorio, quadrasReaisPorTerritorio, quadrasPdfComCentro])
 
   // ── Mapa Leaflet, um mapa simples só pra esta tela ──────────────────────────
   // A div do mapa só entra no DOM depois que `dados`/`imagemInfo` carregam (é
@@ -410,10 +487,10 @@ export default function ImportarCadastroPage() {
                     onClick={() => setPontos(pontosAutomaticos)}
                     style={{ padding: '9px 14px', fontSize: 13, fontWeight: 600, background: '#378ADD', color: '#fff', border: 'none', borderRadius: 8, cursor: 'pointer' }}
                   >
-                    🪄 Calibrar automaticamente ({pontosAutomaticos.length} bairro{pontosAutomaticos.length !== 1 ? 's' : ''} encontrado{pontosAutomaticos.length !== 1 ? 's' : ''})
+                    🪄 Calibrar automaticamente ({pontosAutomaticos.length} ponto{pontosAutomaticos.length !== 1 ? 's' : ''} encontrado{pontosAutomaticos.length !== 1 ? 's' : ''})
                   </button>
                   <span style={{ fontSize: 12, color: '#042C53' }}>
-                    Usa o nome do bairro pra casar com territórios/quadras já cadastrados. Revise os pontos antes de continuar.
+                    Casa pelo nome do bairro e, quando já tem quadra desenhada, refina ponto a ponto pela área de cada quadra. Revise antes de continuar.
                   </span>
                 </div>
               )}

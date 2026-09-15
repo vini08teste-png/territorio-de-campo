@@ -132,6 +132,29 @@ export function centroDoContorno(geojson: unknown): [number, number] | null {
   return [y / (6 * area), x / (6 * area)]
 }
 
+const METROS_POR_GRAU_LAT = 111_320
+
+/**
+ * Área aproximada do contorno em m² (projeção equiretangular simples na
+ * latitude média — precisão de sobra pra comparar tamanho de quadra).
+ */
+export function areaEmMetros(geojson: unknown): number | null {
+  const geometria = extrairGeometria(geojson)
+  if (!geometria) return null
+  const anel = anelPrincipal(geometria)
+  if (!anel || anel.length < 4) return null
+
+  const latMedia = anel.reduce((soma, p) => soma + p[1], 0) / anel.length
+  const metrosPorGrauLng = METROS_POR_GRAU_LAT * Math.cos((latMedia * Math.PI) / 180)
+  const pontos = anel.map(([lng, lat]) => [lng * metrosPorGrauLng, lat * METROS_POR_GRAU_LAT])
+
+  let soma = 0
+  for (let i = 0; i < pontos.length - 1; i++) {
+    soma += pontos[i][0] * pontos[i + 1][1] - pontos[i + 1][0] * pontos[i][1]
+  }
+  return Math.abs(soma / 2)
+}
+
 /**
  * Link para abrir a rota até o território no Google Maps: usa o centro do
  * contorno e, sem contorno, o link do QR code do cartão.
