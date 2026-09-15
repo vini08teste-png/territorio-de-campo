@@ -56,12 +56,16 @@ interface QuadraDb {
 }
 
 // Compara "Alto Bonito", "ALTO BONITO", "Alto  Bonito" etc. como iguais.
+// O OCR do PDF costuma confundir o numeral romano "I" final com "l"
+// minúsculo (ex: "Nova Esperança l" em vez de "Nova Esperança I") —
+// corrige isso trocando um "l" sozinho no fim do nome por "i".
 function normalizarNome(s: string): string {
-  return s
+  const base = s
     .normalize('NFD').replace(/[̀-ͯ]/g, '')
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, ' ')
     .trim()
+  return base.replace(/(^| )l+( |$)/g, (m, ini, fim) => `${ini}${'i'.repeat(m.trim().length)}${fim}`)
 }
 
 const VERDE = '#3BAD68'
