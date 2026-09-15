@@ -65,13 +65,18 @@ export default function CartaoTerritorioPage({ params }: { params: Promise<{ id:
       camadas.push(layer)
     })
 
+    // Zoom fixo e bem próximo, centralizado no território — prioriza
+    // legibilidade das ruas. Em territórios grandes/espalhados, isso pode
+    // deixar alguma quadra de fora da área visível do mapa (ela continua
+    // numerada na legenda de baixo, só sem o marcador desenhado).
+    const ZOOM_CARTAO = 18
     if (camadas.length > 0) {
-      map.fitBounds(L.featureGroup(camadas).getBounds(), { padding: [0, 0], maxZoom: 20 })
+      map.setView(L.featureGroup(camadas).getBounds().getCenter(), ZOOM_CARTAO)
     } else if (territorio?.geojson) {
       const layer = L.geoJSON(territorio.geojson).addTo(map)
-      map.fitBounds(layer.getBounds(), { padding: [0, 0], maxZoom: 20 })
+      map.setView(layer.getBounds().getCenter(), ZOOM_CARTAO)
     } else {
-      map.setView([-6.52, -49.85], 16)
+      map.setView([-6.52, -49.85], ZOOM_CARTAO)
     }
 
     const t = setTimeout(() => map.invalidateSize(), 200)
