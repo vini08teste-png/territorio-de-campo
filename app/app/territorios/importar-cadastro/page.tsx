@@ -19,6 +19,7 @@ import {
   ajustarTransformacao, erroMedioMetros, transformarAnel,
   type PontoControle, type Transformacao,
 } from '@/lib/calibracaoPdf'
+import { centroDoContorno } from '@/lib/territorio'
 
 interface QuadraExtraida {
   anelPdf: [number, number][]
@@ -41,6 +42,27 @@ interface ImagemInfo {
 }
 
 type Etapa = 'carregando' | 'calibrando' | 'revisao' | 'gravando' | 'resumo' | 'erro'
+
+interface TerritorioDb {
+  id: string
+  nome: string
+  bairro: string | null
+  geojson: unknown
+}
+
+interface QuadraDb {
+  territorio_id: string | null
+  geojson: unknown
+}
+
+// Compara "Alto Bonito", "ALTO BONITO", "Alto  Bonito" etc. como iguais.
+function normalizarNome(s: string): string {
+  return s
+    .normalize('NFD').replace(/[̀-ͯ]/g, '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim()
+}
 
 const VERDE = '#3BAD68'
 const CINZA = '#9E9E9E'
@@ -69,6 +91,8 @@ export default function ImportarCadastroPage() {
   const [erroMsg, setErroMsg] = useState('')
   const [dados, setDados] = useState<DadosCadastro | null>(null)
   const [imagemInfo, setImagemInfo] = useState<ImagemInfo | null>(null)
+  const [territoriosDb, setTerritoriosDb] = useState<TerritorioDb[]>([])
+  const [quadrasDb, setQuadrasDb] = useState<QuadraDb[]>([])
 
   const [pontos, setPontos] = useState<PontoControle[]>([])
   const [pendentePdf, setPendentePdf] = useState<[number, number] | null>(null)
@@ -92,7 +116,62 @@ export default function ImportarCadastroPage() {
       setErroMsg('Não achei os arquivos do cadastro (public/cadastro-2015). Gere-os antes de usar esta tela.')
       setEtapa('erro')
     })
+
+    // Territórios/quadras já cadastrados, pra sugerir calibração automática
+    // casando o nome do bairro do PDF com um território/bairro já existente.
+    void Promise.all([
+      supabase.from('territorios').select('id, nome, bairro, geojson'),
+      supabase.from('quadras').select('territorio_id, geojson'),
+    ]).then(([t, q]) => {
+      setTerritoriosDb((t.data as TerritorioDb[]) ?? [])
+      setQuadrasDb((q.data as QuadraDb[]) ?? [])
+    })
   }, [])
+
+  // Centro real (lat/lng) de cada território: usa o contorno dele mesmo
+  // se já tiver sido desenhado, senão a média do centro das quadras já
+  // desenhadas nele (a maioria dos territórios ainda só tem isso).
+  const centroPorTerritorio = useMemo(() => {
+    const mapa = new Map<string, [number, number]>()
+    for (const t of territoriosDb) {
+      const centroProprio = centroDoContorno(t.geojson)
+      if (centroProprio) { mapa.set(t.id, centroProprio); continue }
+      const centrosQuadras = quadrasDb
+        .filter((q) => q.territorio_id === t.id)
+        .map((q) => centroDoContorno(q.geojson))
+        .filter((c): c is [number, number] => !!c)
+      if (centrosQuadras.length === 0) continue
+      const lat = centrosQuadras.reduce((s, c) => s + c[0], 0) / centrosQuadras.length
+      const lng = centrosQuadras.reduce((s, c) => s + c[1], 0) / centrosQuadras.length
+      mapa.set(t.id, [lat, lng])
+    }
+    return mapa
+  }, [territoriosDb, quadrasDb])
+
+  const territorioPorNomeNormalizado = useMemo(() => {
+    const mapa = new Map<string, string>()
+    for (const t of territoriosDb) {
+      for (const candidato of [t.nome, t.bairro]) {
+        if (!candidato) continue
+        const chave = normalizarNome(candidato)
+        if (chave && !mapa.has(chave)) mapa.set(chave, t.id)
+      }
+    }
+    return mapa
+  }, [territoriosDb])
+
+  // Pontos de controle sugeridos casando bairro do PDF ↔ território/bairro
+  // já cadastrado pelo nome, sem precisar clicar na mão.
+  const pontosAutomaticos = useMemo<PontoControle[]>(() => {
+    if (!dados) return []
+    const resultado: PontoControle[] = []
+    for (const b of dados.bairros) {
+      const terrId = territorioPorNomeNormalizado.get(normalizarNome(b.nome))
+      const centro = terrId ? centroPorTerritorio.get(terrId) : undefined
+      if (centro) resultado.push({ pdf: b.centroPdf, real: centro })
+    }
+    return resultado
+  }, [dados, territorioPorNomeNormalizado, centroPorTerritorio])
 
   // ── Mapa Leaflet, um mapa simples só pra esta tela ──────────────────────────
   // A div do mapa só entra no DOM depois que `dados`/`imagemInfo` carregam (é
@@ -321,6 +400,19 @@ export default function ImportarCadastroPage() {
             <div style={{ background: '#F0F9FF', border: '1px solid #B3D9FF', borderRadius: 10, padding: '12px 14px', fontSize: 14, color: '#042C53', lineHeight: 1.6 }}>
               <strong>Passo 1 — Calibrar:</strong> clique um ponto reconhecível na imagem do PDF (ex: um cruzamento de ruas) e depois o mesmo ponto no mapa ao lado. Repita pelo menos 3 vezes, espalhando os pontos pela cidade — quanto mais espalhado, melhor o encaixe.
               {pendentePdf && <><br /><strong>Agora clique no mapa</strong> o ponto correspondente.</>}
+              {pontosAutomaticos.length >= 3 && (
+                <div style={{ marginTop: 10, display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+                  <button
+                    onClick={() => setPontos(pontosAutomaticos)}
+                    style={{ padding: '9px 14px', fontSize: 13, fontWeight: 600, background: '#378ADD', color: '#fff', border: 'none', borderRadius: 8, cursor: 'pointer' }}
+                  >
+                    🪄 Calibrar automaticamente ({pontosAutomaticos.length} bairro{pontosAutomaticos.length !== 1 ? 's' : ''} encontrado{pontosAutomaticos.length !== 1 ? 's' : ''})
+                  </button>
+                  <span style={{ fontSize: 12, color: '#042C53' }}>
+                    Usa o nome do bairro pra casar com territórios/quadras já cadastrados. Revise os pontos antes de continuar.
+                  </span>
+                </div>
+              )}
             </div>
           )}
 
