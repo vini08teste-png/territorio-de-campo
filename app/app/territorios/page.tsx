@@ -2,16 +2,14 @@
 
 import { useEffect, useState } from 'react'
 import Link from 'next/link'
+import { useRouter } from 'next/navigation'
 import { supabase, CORES_STATUS, type Territorio, type Quadra } from '@/lib/supabase'
 import { usePaginaRestrita } from '@/lib/permissoes'
 import { Carregando, SemPermissao } from '@/components/EstadoPagina'
 import SeletorCongregacao from '@/components/SeletorCongregacao'
 import { calcularPrazoTerritorio, formatarPrazo } from '@/lib/prazoTerritorio'
 import { useMapaPrazoPorCongregacao } from '@/lib/congregacoes'
-import {
-  formatarNumeroTerritorio, lerTerritoriosDoGeoJSON, linkComoChegar,
-  textoOuNulo, type TerritorioImportado,
-} from '@/lib/territorio'
+import { linkComoChegar, textoOuNulo } from '@/lib/territorio'
 
 interface DesignacaoSG {
   territorio_id: string
@@ -28,6 +26,10 @@ interface PontoIdioma {
 // acordeão de "expandido" usado pelos cards de território (ids são uuids,
 // nunca colidem com essa string)
 const SEM_TERRITORIO = 'sem-territorio'
+
+// Mesma chave que components/Mapa.tsx lê pra saber qual território
+// desenhar assim que o mapa abrir.
+const CHAVE_DESENHAR_TERRITORIO = 'territorio_de_campo:desenhar_territorio_id'
 
 const FORM_VAZIO = { nome: '', numero: '', bairro: '', link_maps: '', congregacao: '' }
 type FormTerritorio = typeof FORM_VAZIO
@@ -58,19 +60,8 @@ function formularioDoTerritorio(t: Territorio): FormTerritorio {
   }
 }
 
-// Só sobrescreve o que veio preenchido no arquivo
-function camposDaImportacao(item: TerritorioImportado) {
-  const campos: Record<string, unknown> = { geojson: item.geojson }
-  if (item.link_maps !== null) campos.link_maps = item.link_maps
-  return campos
-}
-
-function mensagemDeErro(erro: unknown): string {
-  if (erro instanceof Error) return erro.message
-  return 'Arquivo inválido.'
-}
-
 export default function TerritoriosPage() {
+  const router = useRouter()
   const { usuario, carregando: verificandoAcesso, autorizado } = usePaginaRestrita(['superintendente_territorio', 'admin'])
   const souAdmin = usuario?.perfil === 'admin'
   const [territorios, setTerritorios] = useState<Territorio[]>([])
@@ -83,7 +74,6 @@ export default function TerritoriosPage() {
   const [editandoTerr, setEditandoTerr] = useState<Territorio | null>(null)
   const [enviandoFoto, setEnviandoFoto] = useState(false)
   const [formEdit, setFormEdit] = useState<FormTerritorio>(FORM_VAZIO)
-  const [importando, setImportando] = useState(false)
   const [editandoQuadra, setEditandoQuadra] = useState<Quadra | null>(null)
   const [formQuadra, setFormQuadra] = useState({ nome: '', territorio_id: '' })
   const [expandido, setExpandido] = useState<string | null>(null)
@@ -108,6 +98,11 @@ export default function TerritoriosPage() {
   function mostrarSucesso(msg: string) { setSucesso(msg); setTimeout(() => setSucesso(null), 3000) }
   function mostrarErro(msg: string) { setErro(msg); setTimeout(() => setErro(null), 4000) }
 
+  function irDesenharContorno(territorioId: string) {
+    localStorage.setItem(CHAVE_DESENHAR_TERRITORIO, territorioId)
+    router.push('/app')
+  }
+
   // ── Território ───────────────────────────────────────────────────────────────
   async function criarTerritorio(e: React.FormEvent) {
     e.preventDefault()
@@ -124,10 +119,16 @@ export default function TerritoriosPage() {
       .select().single()
     setSalvando(false)
     if (error) { mostrarErro('Erro ao criar território.'); return }
-    if (data) setTerritorios((prev) => [...prev, data as Territorio].sort((a, b) => Number(a.numero) - Number(b.numero)))
+    if (data) {
+      const novoTerritorio = data as Territorio
+      setTerritorios((prev) => [...prev, novoTerritorio].sort((a, b) => Number(a.numero) - Number(b.numero)))
+      // Abre direto na edição, já com o botão de desenhar contorno visível
+      setEditandoTerr(novoTerritorio)
+      setFormEdit(formularioDoTerritorio(novoTerritorio))
+    }
     setCriando(false)
     setForm(FORM_VAZIO)
-    mostrarSucesso('Território criado!')
+    mostrarSucesso('Território criado! Agora você pode desenhar o contorno dele no mapa.')
   }
 
   async function enviarFotoMarco(e: React.ChangeEvent<HTMLInputElement>) {
@@ -194,69 +195,6 @@ export default function TerritoriosPage() {
     mostrarSucesso(`"${t.nome}" excluído.`)
   }
 
-  // Importa o territorios.geojson do editor: associa pelo número, atualiza o
-  // contorno (e o link, se vier) e cria os que faltam.
-  async function importarContornos(e: React.ChangeEvent<HTMLInputElement>) {
-    const arquivo = e.target.files?.[0]
-    e.target.value = ''
-    if (!arquivo) return
-
-    let lidos: TerritorioImportado[] = []
-    let ignorados = 0
-    try {
-      const resultado = lerTerritoriosDoGeoJSON(JSON.parse(await arquivo.text()))
-      lidos = resultado.territorios
-      ignorados = resultado.ignorados
-    } catch (erroLeitura) {
-      mostrarErro(mensagemDeErro(erroLeitura))
-      return
-    }
-
-    setImportando(true)
-    const { data: { user } } = await supabase.auth.getUser()
-    const lista = [...territorios]
-    let atualizados = 0
-    let criados = 0
-    let falhas = 0
-
-    for (const item of lidos) {
-      const indice = lista.findIndex((t) => Number(t.numero) === item.numero)
-      if (indice >= 0) {
-        const { data, error } = await supabase.from('territorios')
-          .update(camposDaImportacao(item)).eq('id', lista[indice].id).select().single()
-        if (error || !data) { falhas++; continue }
-        lista[indice] = data as Territorio
-        atualizados++
-        continue
-      }
-
-      const numero = formatarNumeroTerritorio(item.numero)
-      const { data, error } = await supabase.from('territorios').insert({
-        ...camposDaImportacao(item),
-        nome: item.localidade || `Território ${numero}`,
-        numero,
-        bairro: item.localidade,
-        status: 'nao_iniciado',
-        criado_por: user?.id,
-        congregacao: souAdmin ? null : usuario?.congregacao ?? null,
-      }).select().single()
-      if (error || !data) { falhas++; continue }
-      lista.push(data as Territorio)
-      criados++
-    }
-
-    setTerritorios(lista.sort((a, b) => Number(a.numero) - Number(b.numero)))
-    setImportando(false)
-
-    const partes = [`${atualizados} atualizado(s)`, `${criados} criado(s)`]
-    if (ignorados > 0) partes.push(`${ignorados} sem número ou contorno ignorado(s)`)
-    if (falhas > 0) {
-      mostrarErro(`Importação com falhas: ${falhas} território(s) não salvos. ${partes.join(', ')}.`)
-      return
-    }
-    mostrarSucesso(`Contornos importados: ${partes.join(', ')}.`)
-  }
-
   // ── Quadra ───────────────────────────────────────────────────────────────────
   function abrirEdicaoQuadra(q: Quadra) {
     setEditandoQuadra(q)
@@ -314,9 +252,6 @@ export default function TerritoriosPage() {
   const quadrasSemTerritorio = quadras.filter((q) => !q.territorio_id)
   const semTerritorioAberto = expandido === SEM_TERRITORIO
 
-  let textoImportar = '📥 Importar contornos'
-  if (importando) textoImportar = 'Importando…'
-
   // Agrupa por congregação — cada admin enxerga territórios de várias.
   const gruposPorCongregacao = (() => {
     const grupos = new Map<string, Territorio[]>()
@@ -345,15 +280,6 @@ export default function TerritoriosPage() {
         }}>
           📐 Importar do PDF
         </Link>
-        <label title="Arquivo territorios.geojson gerado pelo editor de territórios" style={{
-          padding: '10px 14px', fontSize: 14, fontWeight: 600,
-          background: '#F7F7F7', color: '#1A1A1A',
-          border: '0.5px solid #DDD', borderRadius: 10, cursor: 'pointer',
-        }}>
-          {textoImportar}
-          <input type="file" accept=".geojson,.json,application/geo+json,application/json" hidden
-            disabled={importando} onChange={(e) => void importarContornos(e)} />
-        </label>
         <button onClick={() => {
           if (!criando && !souAdmin) setForm((p) => ({ ...p, congregacao: usuario?.congregacao ?? '' }))
           setCriando(!criando)
@@ -640,6 +566,20 @@ export default function TerritoriosPage() {
                   style={{ width: '100%', padding: '11px 14px', fontSize: 15, border: '1px solid #DDD', borderRadius: 8, background: '#FAFAFA', outline: 'none', boxSizing: 'border-box' }} />
               </div>
               <CamposExtras valores={formEdit} alterar={(campo, valor) => setFormEdit((p) => ({ ...p, [campo]: valor }))} souAdmin={souAdmin} />
+
+              <div>
+                <button type="button" onClick={() => irDesenharContorno(editandoTerr.id)} style={{
+                  width: '100%', padding: '11px', fontSize: 14, fontWeight: 600,
+                  background: '#F0EEFF', color: '#6B3FD4', border: '1px solid #D9C6FF', borderRadius: 8, cursor: 'pointer',
+                }}>
+                  🖊️ {editandoTerr.geojson ? 'Redesenhar contorno no mapa' : 'Desenhar contorno no mapa'}
+                </button>
+                <p style={{ fontSize: 12, color: '#999', margin: '6px 0 0' }}>
+                  {editandoTerr.geojson
+                    ? 'Esse território já tem contorno próprio.'
+                    : 'Sem contorno próprio ainda — o mapa mostra uma área estimada com base nas quadras.'}
+                </p>
+              </div>
 
               <div>
                 <label style={{ display: 'block', fontSize: 13, fontWeight: 500, color: '#444', marginBottom: 6 }}>Foto do marco</label>

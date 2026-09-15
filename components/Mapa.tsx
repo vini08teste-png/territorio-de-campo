@@ -7,6 +7,10 @@ import ImportarOSM from '@/components/ImportarOSM'
 import { escaparHtml, linkComoChegar } from '@/lib/territorio'
 
 
+// Setada pela tela de Territórios antes de mandar o usuário pro mapa, pra
+// já abrir direto no modo de desenho de contorno daquele território.
+const CHAVE_DESENHAR_TERRITORIO = 'territorio_de_campo:desenhar_territorio_id'
+
 type StatusQuadra = 'nao_iniciado' | 'em_andamento' | 'parcial' | 'concluido' | 'pendente'
 
 interface GeoJSONFeature {
@@ -127,6 +131,7 @@ export default function Mapa() {
   const modoSelecaoRef = useRef(false)
   const selecionadasRef = useRef<Set<string>>(new Set())
   const drawSelecaoRef = useRef<any>(null)
+  const drawContornoRef = useRef<any>(null)
 
   const [usuario, setUsuario] = useState<Usuario | null>(null)
   const [territorios, setTerritorios] = useState<Territorio[]>([])
@@ -137,6 +142,7 @@ export default function Mapa() {
   const [ultimoTrabalho, setUltimoTrabalho] = useState<{ quadraId: string; quadraNome: string; territorioId: string } | null>(null)
   const [ultimoTrabalhoFechado, setUltimoTrabalhoFechado] = useState(false)
   const [modoDesenho, setModoDesenho] = useState(false)
+  const [desenhandoContornoDe, setDesenhandoContornoDe] = useState<Territorio | null>(null)
   const [salvando, setSalvando] = useState(false)
   const [feedback, setFeedback] = useState<string | null>(null)
   const [painelOSM, setPainelOSM] = useState(false)
@@ -631,6 +637,51 @@ export default function Mapa() {
     m.once(L.Draw.Event.DRAWSTOP, () => { m.removeControl(drawControl); setModoDesenho(false) })
   }
 
+  // ── Desenho do contorno do território (diferente da quadra: salva direto
+  // em territorios.geojson, sem passar por modal) ────────────────────────────
+  function iniciarDesenhoContornoTerritorio(t: Territorio) {
+    const m = mapInstanceRef.current
+    const L = (window as any).L
+    if (!m || !L || !L.Draw) return
+    setDesenhandoContornoDe(t)
+    setPainelAberto(false)
+
+    const drawer = new L.Draw.Polygon(m, { allowIntersection: false, showArea: true, shapeOptions: { color: '#1F3A5F', weight: 3 } })
+    drawer.enable()
+    drawContornoRef.current = drawer
+
+    m.once(L.Draw.Event.CREATED, async (e: any) => {
+      drawContornoRef.current = null
+      const geojson = e.layer.toGeoJSON()
+      setSalvando(true)
+      const { error } = await supabase.from('territorios').update({ geojson }).eq('id', t.id)
+      setSalvando(false)
+      setDesenhandoContornoDe(null)
+      if (error) { mostrarFeedback('Erro ao salvar contorno.'); return }
+      mostrarFeedback(`Contorno de "${t.nome}" salvo!`)
+      void carregarQuadras()
+    })
+    m.once(L.Draw.Event.DRAWSTOP, () => { drawContornoRef.current = null; setDesenhandoContornoDe(null) })
+  }
+
+  function cancelarDesenhoContorno() {
+    drawContornoRef.current?.disable()
+    drawContornoRef.current = null
+    setDesenhandoContornoDe(null)
+  }
+
+  // Se a tela de Territórios pediu pra desenhar um contorno específico,
+  // ativa o modo assim que os territórios (e o mapa) estiverem prontos.
+  useEffect(() => {
+    if (!territoriosCarregados || territorios.length === 0) return
+    const id = localStorage.getItem(CHAVE_DESENHAR_TERRITORIO)
+    if (!id) return
+    localStorage.removeItem(CHAVE_DESENHAR_TERRITORIO)
+    const t = territorios.find((x) => x.id === id)
+    if (t) iniciarDesenhoContornoTerritorio(t)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [territoriosCarregados, territorios])
+
   async function confirmarCriarQuadra() {
     if (!novaQuadraNome.trim()) { mostrarFeedback('Digite o nome da quadra.'); return }
     if (!novaQuadraTerritorioId) { mostrarFeedback('Selecione um território.'); return }
@@ -728,8 +779,29 @@ export default function Mapa() {
     <div style={{ position: 'relative', width: '100%', height: '100%' }}>
       <div ref={mapRef} style={{ width: '100%', height: '100%' }} />
 
+      {/* Desenhando contorno de território */}
+      {desenhandoContornoDe && (
+        <div style={{
+          position: 'absolute', top: 10, left: '50%', transform: 'translateX(-50%)', zIndex: 1000,
+          display: 'flex', alignItems: 'center', gap: 10,
+          background: '#1F3A5F', color: '#fff', borderRadius: 8,
+          boxShadow: '0 1px 4px rgba(0,0,0,0.25)', padding: '8px 8px 8px 14px',
+          maxWidth: '90%', fontSize: 13,
+        }}>
+          <span>
+            🖊️ Desenhando contorno de <strong>#{desenhandoContornoDe.numero} — {desenhandoContornoDe.nome}</strong>: clique pra marcar os cantos, dê duplo-clique pra fechar.
+          </span>
+          <button
+            onClick={cancelarDesenhoContorno}
+            style={{ background: 'rgba(255,255,255,0.15)', border: 'none', borderRadius: 6, color: '#fff', cursor: 'pointer', padding: '4px 10px', flexShrink: 0, fontSize: 12 }}
+          >
+            Cancelar
+          </button>
+        </div>
+      )}
+
       {/* Onde parei */}
-      {!modoDesenho && !modalCriar && !modalPonto && !painelOSM && !modoSelecao && !painelAberto && ultimoTrabalho && !ultimoTrabalhoFechado && (
+      {!modoDesenho && !modalCriar && !modalPonto && !painelOSM && !modoSelecao && !painelAberto && !desenhandoContornoDe && ultimoTrabalho && !ultimoTrabalhoFechado && (
         <div style={{
           position: 'absolute', top: 10, right: 10, zIndex: 900,
           display: 'flex', alignItems: 'center', gap: 6,
@@ -758,7 +830,7 @@ export default function Mapa() {
       )}
 
       {/* Filtro: ver só um território */}
-      {!modoDesenho && !modalCriar && !modalPonto && !painelOSM && !modoSelecao && territoriosCarregados && territorios.length > 0 && (
+      {!modoDesenho && !modalCriar && !modalPonto && !painelOSM && !modoSelecao && !desenhandoContornoDe && territoriosCarregados && territorios.length > 0 && (
         <select
           value={territorioFiltro}
           onChange={(e) => setTerritorioFiltro(e.target.value)}
