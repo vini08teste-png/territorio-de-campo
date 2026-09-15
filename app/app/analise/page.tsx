@@ -22,6 +22,7 @@ interface Territorio {
   numero: number
   bairro: string
   status: string
+  congregacao: string | null
 }
 
 interface TerritorioDados {
@@ -33,6 +34,7 @@ interface TerritorioDados {
   pendentes: number
   naoIniciadas: number
   emAndamento: number
+  vencido: boolean
 }
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
@@ -57,7 +59,6 @@ export default function AnalisePage() {
   const [dados, setDados] = useState<TerritorioDados[]>([])
   const [ordenar, setOrdenar] = useState<'numero' | 'progresso' | 'nome'>('numero')
   const [busca, setBusca] = useState('')
-  const [territoriosVencidos, setTerritoriosVencidos] = useState(0)
 
   // Só é chamada depois que o acesso foi verificado (ver useEffect abaixo)
   const carregar = useCallback(async () => {
@@ -71,10 +72,12 @@ export default function AnalisePage() {
     if (!territorios || !quadras) { setLoading(false); return }
 
     const prazoDias = config?.prazo_territorio_dias ?? 120
-    const vencidos = (designacoesSG ?? []).filter(
-      (d) => calcularPrazoTerritorio(d.data_inicio, prazoDias).vencido
-    ).length
-    setTerritoriosVencidos(vencidos)
+    const vencidoPorTerritorio = new Map<string, boolean>()
+    for (const d of designacoesSG ?? []) {
+      if (calcularPrazoTerritorio(d.data_inicio, prazoDias).vencido) {
+        vencidoPorTerritorio.set(d.territorio_id, true)
+      }
+    }
 
     const resultado: TerritorioDados[] = territorios.map((t: Territorio) => {
       const qs = (quadras as Quadra[]).filter((q) => q.territorio_id === t.id)
@@ -87,6 +90,7 @@ export default function AnalisePage() {
         pendentes: qs.filter((q) => q.status === 'pendente').length,
         naoIniciadas: qs.filter((q) => q.status === 'nao_iniciado').length,
         emAndamento: qs.filter((q) => q.status === 'em_andamento').length,
+        vencido: vencidoPorTerritorio.get(t.id) ?? false,
       }
     })
 
@@ -101,14 +105,6 @@ export default function AnalisePage() {
     void carregar()
   }, [usuario, autorizado, carregar])
 
-  // ── Totais globais ────────────────────────────────────────────────────────────
-  const totalTerritorios = dados.length
-  const totalQuadras = dados.reduce((s, d) => s + d.quadras.length, 0)
-  const totalConcluidas = dados.reduce((s, d) => s + d.concluidas, 0)
-  const progressoGeral = dados.length
-    ? Math.round(dados.reduce((s, d) => s + d.progresso, 0) / dados.length)
-    : 0
-
   // ── Filtro e ordenação ────────────────────────────────────────────────────────
   const dadosFiltrados = dados
     .filter((d) =>
@@ -121,6 +117,29 @@ export default function AnalisePage() {
       if (ordenar === 'nome') return a.territorio.nome.localeCompare(b.territorio.nome)
       return a.territorio.numero - b.territorio.numero
     })
+
+  // ── Agrupado por congregação — cada uma com seu próprio resumo ─────────────────
+  const gruposPorCongregacao = (() => {
+    const grupos = new Map<string, TerritorioDados[]>()
+    for (const d of dadosFiltrados) {
+      const chave = d.territorio.congregacao?.trim() || 'Sem congregação definida'
+      const lista = grupos.get(chave) ?? []
+      lista.push(d)
+      grupos.set(chave, lista)
+    }
+    return Array.from(grupos.entries())
+      .map(([nome, itens]) => ({
+        nome,
+        itens,
+        totalQuadras: itens.reduce((s, d) => s + d.quadras.length, 0),
+        totalConcluidas: itens.reduce((s, d) => s + d.concluidas, 0),
+        totalVencidos: itens.filter((d) => d.vencido).length,
+        progressoMedio: itens.length
+          ? Math.round(itens.reduce((s, d) => s + d.progresso, 0) / itens.length)
+          : 0,
+      }))
+      .sort((a, b) => a.nome.localeCompare(b.nome))
+  })()
 
   // ── Exportar JSON ─────────────────────────────────────────────────────────────
   function exportarJSON() {
@@ -172,62 +191,8 @@ export default function AnalisePage() {
         </button>
       </div>
 
-      {/* Cards de resumo */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: 10, marginBottom: '2rem' }}>
-        <MetricCard label="Progresso geral" valor={`${progressoGeral}%`} cor={COR_PROGRESSO(progressoGeral)} />
-        <MetricCard label="Territórios" valor={totalTerritorios} />
-        <MetricCard label="Quadras totais" valor={totalQuadras} />
-        <MetricCard label="Concluídas" valor={totalConcluidas} cor="#3BAD68" />
-        <MetricCard label="Territórios vencidos" valor={territoriosVencidos} cor={territoriosVencidos > 0 ? '#E05050' : undefined} />
-      </div>
-
-      {/* Gráfico de barras */}
-      {dados.length > 0 && (
-        <div style={{
-          background: '#FFFFFF', border: '0.5px solid #EEEEEE',
-          borderRadius: 12, padding: '1.25rem', marginBottom: '1.5rem',
-        }}>
-          <h2 style={{ fontSize: 15, fontWeight: 600, color: '#1A1A1A', marginTop: 0, marginBottom: '1.25rem' }}>
-            Progresso por território
-          </h2>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-            {[...dados]
-              .sort((a, b) => b.progresso - a.progresso)
-              .slice(0, 12)
-              .map((d) => (
-                <div key={d.territorio.id} style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                  <span style={{ fontSize: 12, color: '#666', minWidth: 22, textAlign: 'right' }}>
-                    #{d.territorio.numero}
-                  </span>
-                  <span style={{ fontSize: 13, color: '#1A1A1A', minWidth: 120, maxWidth: 140, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                    {d.territorio.nome}
-                  </span>
-                  <div style={{ flex: 1, height: 12, background: '#F0F0F0', borderRadius: 6, overflow: 'hidden' }}>
-                    <div style={{
-                      height: '100%',
-                      width: `${d.progresso}%`,
-                      background: COR_PROGRESSO(d.progresso),
-                      borderRadius: 6,
-                      transition: 'width 0.5s ease',
-                      minWidth: d.progresso > 0 ? 4 : 0,
-                    }} />
-                  </div>
-                  <span style={{ fontSize: 12, fontWeight: 600, color: '#1A1A1A', minWidth: 36, textAlign: 'right' }}>
-                    {d.progresso}%
-                  </span>
-                </div>
-              ))}
-            {dados.length > 12 && (
-              <p style={{ fontSize: 12, color: '#999', margin: '4px 0 0', textAlign: 'center' }}>
-                Mostrando top 12 — veja a tabela abaixo para todos
-              </p>
-            )}
-          </div>
-        </div>
-      )}
-
-      {/* Filtros da tabela */}
-      <div style={{ display: 'flex', gap: 10, marginBottom: '1rem', flexWrap: 'wrap' }}>
+      {/* Filtros */}
+      <div style={{ display: 'flex', gap: 10, marginBottom: '1.5rem', flexWrap: 'wrap' }}>
         <input
           type="text"
           placeholder="Buscar território…"
@@ -254,18 +219,81 @@ export default function AnalisePage() {
         </select>
       </div>
 
-      {/* Tabela de territórios */}
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-        {dadosFiltrados.length === 0 ? (
-          <div style={{ textAlign: 'center', padding: '2rem', color: '#999', fontSize: 15 }}>
-            Nenhum território encontrado.
-          </div>
-        ) : (
-          dadosFiltrados.map((d) => (
-            <TerritorioCarta key={d.territorio.id} dados={d} />
-          ))
-        )}
-      </div>
+      {/* Um bloco por congregação — cada uma com seu próprio resumo, gráfico e tabela */}
+      {gruposPorCongregacao.length === 0 ? (
+        <div style={{ textAlign: 'center', padding: '2rem', color: '#999', fontSize: 15 }}>
+          Nenhum território encontrado.
+        </div>
+      ) : (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '2.5rem' }}>
+          {gruposPorCongregacao.map((grupo) => (
+            <div key={grupo.nome}>
+              <h2 style={{
+                fontSize: 13, fontWeight: 700, color: '#888', textTransform: 'uppercase',
+                letterSpacing: '0.5px', marginBottom: 12, display: 'flex', alignItems: 'center', gap: 8,
+              }}>
+                🏛️ {grupo.nome}
+              </h2>
+
+              {/* Cards de resumo da congregação */}
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(130px, 1fr))', gap: 10, marginBottom: '1.25rem' }}>
+                <MetricCard label="Progresso médio" valor={`${grupo.progressoMedio}%`} cor={COR_PROGRESSO(grupo.progressoMedio)} />
+                <MetricCard label="Territórios" valor={grupo.itens.length} />
+                <MetricCard label="Quadras totais" valor={grupo.totalQuadras} />
+                <MetricCard label="Concluídas" valor={grupo.totalConcluidas} cor="#3BAD68" />
+                <MetricCard label="Vencidos" valor={grupo.totalVencidos} cor={grupo.totalVencidos > 0 ? '#E05050' : undefined} />
+              </div>
+
+              {/* Gráfico de barras da congregação */}
+              <div style={{
+                background: '#FFFFFF', border: '0.5px solid #EEEEEE',
+                borderRadius: 12, padding: '1.25rem', marginBottom: '1rem',
+              }}>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                  {[...grupo.itens]
+                    .sort((a, b) => b.progresso - a.progresso)
+                    .slice(0, 12)
+                    .map((d) => (
+                      <div key={d.territorio.id} style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                        <span style={{ fontSize: 12, color: '#666', minWidth: 22, textAlign: 'right' }}>
+                          #{d.territorio.numero}
+                        </span>
+                        <span style={{ fontSize: 13, color: '#1A1A1A', minWidth: 120, maxWidth: 140, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                          {d.territorio.nome}
+                        </span>
+                        <div style={{ flex: 1, height: 12, background: '#F0F0F0', borderRadius: 6, overflow: 'hidden' }}>
+                          <div style={{
+                            height: '100%',
+                            width: `${d.progresso}%`,
+                            background: COR_PROGRESSO(d.progresso),
+                            borderRadius: 6,
+                            transition: 'width 0.5s ease',
+                            minWidth: d.progresso > 0 ? 4 : 0,
+                          }} />
+                        </div>
+                        <span style={{ fontSize: 12, fontWeight: 600, color: '#1A1A1A', minWidth: 36, textAlign: 'right' }}>
+                          {d.progresso}%
+                        </span>
+                      </div>
+                    ))}
+                  {grupo.itens.length > 12 && (
+                    <p style={{ fontSize: 12, color: '#999', margin: '4px 0 0', textAlign: 'center' }}>
+                      Mostrando top 12 — veja a tabela abaixo para todos
+                    </p>
+                  )}
+                </div>
+              </div>
+
+              {/* Tabela de territórios da congregação */}
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                {grupo.itens.map((d) => (
+                  <TerritorioCarta key={d.territorio.id} dados={d} />
+                ))}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   )
 }

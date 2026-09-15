@@ -309,6 +309,19 @@ export default function UsuariosPage() {
     (u.congregacao ?? '').toLowerCase().includes(termo)
   )
 
+  const gruposPorCongregacao = (() => {
+    const grupos = new Map<string, UsuarioComCongregacao[]>()
+    for (const u of filtrados) {
+      const chave = u.congregacao?.trim() || 'Sem congregação definida'
+      const lista = grupos.get(chave) ?? []
+      lista.push(u)
+      grupos.set(chave, lista)
+    }
+    return Array.from(grupos.entries())
+      .map(([nome, us]) => ({ nome, usuarios: us }))
+      .sort((a, b) => a.nome.localeCompare(b.nome))
+  })()
+
   if (verificandoAcesso) return <Carregando />
   if (!autorizado) return <SemPermissao />
 
@@ -399,9 +412,21 @@ export default function UsuariosPage() {
         <div style={{
           display: 'flex',
           flexDirection: 'column',
-          gap: 12,
+          gap: 24,
         }}>
-          {filtrados.map((u) => {
+        {gruposPorCongregacao.map((grupo) => (
+        <div key={grupo.nome}>
+          <h2 style={{
+            fontSize: 13, fontWeight: 700, color: '#888', textTransform: 'uppercase',
+            letterSpacing: '0.5px', marginBottom: 10, display: 'flex', alignItems: 'center', gap: 8,
+          }}>
+            🏛️ {grupo.nome}
+            <span style={{ fontWeight: 500, textTransform: 'none', color: '#AAAAAA' }}>
+              {grupo.usuarios.length} usuário{grupo.usuarios.length !== 1 ? 's' : ''}
+            </span>
+          </h2>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+          {grupo.usuarios.map((u) => {
             const cores = CORES_PERFIL[u.perfil]
 
             return (
@@ -524,6 +549,9 @@ export default function UsuariosPage() {
               </div>
             )
           })}
+          </div>
+        </div>
+        ))}
 
           {filtrados.length === 0 && (
             <p style={{

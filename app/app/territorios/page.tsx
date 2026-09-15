@@ -306,6 +306,20 @@ export default function TerritoriosPage() {
   let textoImportar = '📥 Importar contornos'
   if (importando) textoImportar = 'Importando…'
 
+  // Agrupa por congregação — cada admin enxerga territórios de várias.
+  const gruposPorCongregacao = (() => {
+    const grupos = new Map<string, Territorio[]>()
+    for (const t of territorios) {
+      const chave = t.congregacao?.trim() || 'Sem congregação definida'
+      const lista = grupos.get(chave) ?? []
+      lista.push(t)
+      grupos.set(chave, lista)
+    }
+    return Array.from(grupos.entries())
+      .map(([nome, terrs]) => ({ nome, territorios: terrs }))
+      .sort((a, b) => a.nome.localeCompare(b.nome))
+  })()
+
   return (
     <div style={{ padding: '1.5rem 1rem 4rem', maxWidth: 800, margin: '0 auto' }}>
 
@@ -427,9 +441,21 @@ export default function TerritoriosPage() {
         </div>
       )}
 
-      {/* Lista territórios */}
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-        {territorios.map((t) => {
+      {/* Lista territórios, agrupados por congregação */}
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 26 }}>
+      {gruposPorCongregacao.map((grupo) => (
+      <div key={grupo.nome}>
+        <h2 style={{
+          fontSize: 13, fontWeight: 700, color: '#888', textTransform: 'uppercase',
+          letterSpacing: '0.5px', marginBottom: 10, display: 'flex', alignItems: 'center', gap: 8,
+        }}>
+          🏛️ {grupo.nome}
+          <span style={{ fontWeight: 500, textTransform: 'none', color: '#AAAAAA' }}>
+            {grupo.territorios.length} território{grupo.territorios.length !== 1 ? 's' : ''}
+          </span>
+        </h2>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+        {grupo.territorios.map((t) => {
           const pct = calcPct(t.id)
           const qs = quadras.filter((q) => q.territorio_id === t.id)
           const corPct = pct >= 100 ? '#3BAD68' : pct > 50 ? '#F0A030' : '#888'
@@ -447,9 +473,6 @@ export default function TerritoriosPage() {
                   <div style={{ flex: 1 }}>
                     <div style={{ fontSize: 16, fontWeight: 700, color: '#1A1A1A' }}>#{t.numero} — {t.nome}</div>
                     <div style={{ fontSize: 13, color: '#888', marginTop: 2 }}>{t.bairro}</div>
-                    {t.congregacao && (
-                      <div style={{ fontSize: 12, color: '#6B3FD4', marginTop: 2, fontWeight: 600 }}>🏛️ {t.congregacao}</div>
-                    )}
                     {!t.geojson && (
                       <div style={{ fontSize: 12, color: '#B07A00', marginTop: 2 }}>Sem contorno no mapa</div>
                     )}
@@ -568,6 +591,9 @@ export default function TerritoriosPage() {
             </div>
           )
         })}
+        </div>
+      </div>
+      ))}
         {territorios.length === 0 && <p style={{ textAlign: 'center', color: '#888', padding: 40 }}>Nenhum território. Crie o primeiro!</p>}
       </div>
 

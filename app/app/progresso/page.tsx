@@ -71,11 +71,33 @@ export default function ProgressoPage() {
   if (verificandoAcesso) return <Carregando />
   if (!autorizado) return <SemPermissao />
 
+  const gruposPorCongregacao = (() => {
+    const grupos = new Map<string, Territorio[]>()
+    for (const t of territorios) {
+      const chave = t.congregacao?.trim() || 'Sem congregação definida'
+      const lista = grupos.get(chave) ?? []
+      lista.push(t)
+      grupos.set(chave, lista)
+    }
+    return Array.from(grupos.entries())
+      .map(([nome, terrs]) => ({ nome, territorios: terrs }))
+      .sort((a, b) => a.nome.localeCompare(b.nome))
+  })()
+
   return (
     <div style={{ padding: 24, maxWidth: 700, margin: '0 auto' }}>
       <h1 style={{ fontSize: 26, fontWeight: 800, marginBottom: 24 }}>📊 Progresso dos territórios</h1>
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-        {territorios.map(t => {
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 28 }}>
+      {gruposPorCongregacao.map((grupo) => (
+      <div key={grupo.nome}>
+        <h2 style={{
+          fontSize: 13, fontWeight: 700, color: '#888', textTransform: 'uppercase',
+          letterSpacing: '0.5px', marginBottom: 12, display: 'flex', alignItems: 'center', gap: 8,
+        }}>
+          🏛️ {grupo.nome}
+        </h2>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+        {grupo.territorios.map(t => {
           const prog = calcularProgresso(t.id)
           const qs = quadras.filter(q => q.territorio_id === t.id)
           const idiomaT = idiomaPorTerritorio(t.id)
@@ -113,6 +135,9 @@ export default function ProgressoPage() {
             </div>
           )
         })}
+        </div>
+      </div>
+      ))}
         {!territorios.length && <p style={{ textAlign: 'center', color: '#888', padding: 40 }}>Nenhum território encontrado.</p>}
       </div>
     </div>

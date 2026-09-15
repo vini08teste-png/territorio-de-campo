@@ -20,35 +20,31 @@ interface TerritorioLinha {
   nome: string
   numero: string
   criado_por: string | null
-}
-
-interface QuadraLinha {
-  id: string
-  territorio_id: string
+  congregacao: string | null
 }
 
 interface DesignacaoLinha {
   usuario_id: string
   territorio_id: string | null
-  quadra_id: string | null
   data_inicio: string
 }
 
+interface MembroGrupoLinha {
+  dirigente_id: string
+  sg_id: string
+}
+
 // ── Árvore montada em memória ──────────────────────────────────────────────────
-interface NoDirigente { usuario: UsuarioLinha }
 interface NoTerritorio {
   territorio: TerritorioLinha
+  st: UsuarioLinha | null
   sg: UsuarioLinha | null
   sgDataInicio: string | null
-  dirigentes: NoDirigente[]
-}
-interface NoST {
-  usuario: UsuarioLinha
-  territorios: NoTerritorio[]
+  dirigentes: UsuarioLinha[]
 }
 interface NoCongregacao {
   nome: string
-  sts: NoST[]
+  territorios: NoTerritorio[]
 }
 
 function Avatar({ nome, perfil }: { nome: string; perfil: Perfil }) {
@@ -99,8 +95,8 @@ export default function HierarquiaPage() {
   const [carregando, setCarregando] = useState(true)
   const [usuarios, setUsuarios] = useState<UsuarioLinha[]>([])
   const [territorios, setTerritorios] = useState<TerritorioLinha[]>([])
-  const [quadras, setQuadras] = useState<QuadraLinha[]>([])
   const [designacoes, setDesignacoes] = useState<DesignacaoLinha[]>([])
+  const [membros, setMembros] = useState<MembroGrupoLinha[]>([])
   const [prazoDias, setPrazoDias] = useState(120)
   const [busca, setBusca] = useState('')
 
@@ -109,104 +105,81 @@ export default function HierarquiaPage() {
 
     void Promise.all([
       supabase.from('usuarios').select('id, nome, email, perfil, ativo, congregacao'),
-      supabase.from('territorios').select('id, nome, numero, criado_por'),
-      supabase.from('quadras').select('id, territorio_id'),
-      supabase.from('designacoes').select('usuario_id, territorio_id, quadra_id, data_inicio').is('data_fim', null),
+      supabase.from('territorios').select('id, nome, numero, criado_por, congregacao'),
+      supabase.from('designacoes').select('usuario_id, territorio_id, data_inicio').is('quadra_id', null).is('data_fim', null),
+      supabase.from('membros_grupo').select('dirigente_id, sg_id').is('data_fim', null),
       supabase.from('configuracoes').select('prazo_territorio_dias').eq('id', 1).single(),
-    ]).then(([u, t, q, d, c]) => {
+    ]).then(([u, t, d, mg, c]) => {
       setUsuarios((u.data as UsuarioLinha[]) ?? [])
       setTerritorios((t.data as TerritorioLinha[]) ?? [])
-      setQuadras((q.data as QuadraLinha[]) ?? [])
       setDesignacoes((d.data as DesignacaoLinha[]) ?? [])
+      setMembros((mg.data as MembroGrupoLinha[]) ?? [])
       setPrazoDias(c.data?.prazo_territorio_dias ?? 120)
       setCarregando(false)
     })
   }, [verificandoAcesso, autorizado])
 
-  const { congregacoes, orfaos, semTerritorio } = useMemo(() => {
+  const { congregacoes, orfaos } = useMemo(() => {
     const usuarioPorId = new Map(usuarios.map((u) => [u.id, u]))
 
-    // SG designado por território (quadra_id nulo)
+    // SG designado por território
     const sgPorTerritorio = new Map<string, UsuarioLinha>()
     const sgDataInicioPorTerritorio = new Map<string, string>()
-    // Dirigentes designados por quadra
-    const dirigentePorQuadra = new Map<string, UsuarioLinha[]>()
-    // Ids de quem já apareceu em algum lugar da árvore
     const usadosComoSG = new Set<string>()
-    const usadosComoDirigente = new Set<string>()
-
     for (const d of designacoes) {
       const usuario = usuarioPorId.get(d.usuario_id)
-      if (!usuario) continue
-      if (d.quadra_id === null && d.territorio_id) {
-        sgPorTerritorio.set(d.territorio_id, usuario)
-        sgDataInicioPorTerritorio.set(d.territorio_id, d.data_inicio)
-        usadosComoSG.add(usuario.id)
-      } else if (d.quadra_id) {
-        const lista = dirigentePorQuadra.get(d.quadra_id) ?? []
-        lista.push(usuario)
-        dirigentePorQuadra.set(d.quadra_id, lista)
-        usadosComoDirigente.add(usuario.id)
-      }
+      if (!usuario || !d.territorio_id) continue
+      sgPorTerritorio.set(d.territorio_id, usuario)
+      sgDataInicioPorTerritorio.set(d.territorio_id, d.data_inicio)
+      usadosComoSG.add(usuario.id)
     }
 
-    const quadrasPorTerritorio = new Map<string, QuadraLinha[]>()
-    for (const q of quadras) {
-      const lista = quadrasPorTerritorio.get(q.territorio_id) ?? []
-      lista.push(q)
-      quadrasPorTerritorio.set(q.territorio_id, lista)
-    }
-
-    const territoriosPorST = new Map<string, TerritorioLinha[]>()
-    const territoriosSemST: TerritorioLinha[] = []
-    for (const t of territorios) {
-      if (t.criado_por) {
-        const lista = territoriosPorST.get(t.criado_por) ?? []
-        lista.push(t)
-        territoriosPorST.set(t.criado_por, lista)
-      } else {
-        territoriosSemST.push(t)
-      }
+    // Dirigentes do grupo de cada SG
+    const dirigentesPorSG = new Map<string, UsuarioLinha[]>()
+    const usadosComoDirigente = new Set<string>()
+    for (const m of membros) {
+      const dirigente = usuarioPorId.get(m.dirigente_id)
+      if (!dirigente) continue
+      const lista = dirigentesPorSG.get(m.sg_id) ?? []
+      lista.push(dirigente)
+      dirigentesPorSG.set(m.sg_id, lista)
+      usadosComoDirigente.add(dirigente.id)
     }
 
     function montarNoTerritorio(t: TerritorioLinha): NoTerritorio {
+      const st = t.criado_por ? usuarioPorId.get(t.criado_por) ?? null : null
       const sg = sgPorTerritorio.get(t.id) ?? null
       const sgDataInicio = sgDataInicioPorTerritorio.get(t.id) ?? null
-      const qs = quadrasPorTerritorio.get(t.id) ?? []
-      const dirigentes: NoDirigente[] = qs
-        .flatMap((q) => dirigentePorQuadra.get(q.id) ?? [])
-        .map((usuario) => ({ usuario }))
-      return { territorio: t, sg, sgDataInicio, dirigentes }
+      const dirigentes = sg ? dirigentesPorSG.get(sg.id) ?? [] : []
+      return { territorio: t, st, sg, sgDataInicio, dirigentes }
     }
 
-    const sts = usuarios.filter((u) => u.perfil === 'superintendente_territorio')
-    const grupos = new Map<string, NoST[]>()
-
-    for (const st of sts) {
-      const chave = st.congregacao?.trim() || 'Sem congregação definida'
-      const noST: NoST = {
-        usuario: st,
-        territorios: (territoriosPorST.get(st.id) ?? []).map(montarNoTerritorio),
-      }
+    const grupos = new Map<string, NoTerritorio[]>()
+    for (const t of territorios) {
+      const chave = t.congregacao?.trim() || 'Sem congregação definida'
       const lista = grupos.get(chave) ?? []
-      lista.push(noST)
+      lista.push(montarNoTerritorio(t))
       grupos.set(chave, lista)
     }
 
     const congregacoesMontadas: NoCongregacao[] = Array.from(grupos.entries())
-      .map(([nome, sts2]) => ({ nome, sts: sts2 }))
+      .map(([nome, terrs]) => ({
+        nome,
+        territorios: terrs.sort((a, b) => Number(a.territorio.numero) - Number(b.territorio.numero)),
+      }))
       .sort((a, b) => a.nome.localeCompare(b.nome))
 
     // Quem ficou de fora da árvore inteira
     const sgSemTerritorio = usuarios.filter((u) => u.perfil === 'superintendente_grupo' && !usadosComoSG.has(u.id))
-    const dirigenteSemQuadra = usuarios.filter((u) => u.perfil === 'dirigente' && !usadosComoDirigente.has(u.id))
+    const dirigenteSemGrupo = usuarios.filter((u) => u.perfil === 'dirigente' && !usadosComoDirigente.has(u.id))
+    const stSemTerritorio = usuarios.filter((u) =>
+      u.perfil === 'superintendente_territorio' && !territorios.some((t) => t.criado_por === u.id))
 
     return {
       congregacoes: congregacoesMontadas,
-      orfaos: { sgSemTerritorio, dirigenteSemQuadra },
-      semTerritorio: territoriosSemST,
+      orfaos: { sgSemTerritorio, dirigenteSemGrupo, stSemTerritorio },
     }
-  }, [usuarios, territorios, quadras, designacoes])
+  }, [usuarios, territorios, designacoes, membros])
 
   if (verificandoAcesso) return <Carregando />
   if (!autorizado) return <SemPermissao />
@@ -224,7 +197,7 @@ export default function HierarquiaPage() {
       <div style={{ marginBottom: 20 }}>
         <h1 style={{ fontSize: 24, fontWeight: 700, color: '#1A1A1A', margin: 0 }}>Hierarquia</h1>
         <p style={{ fontSize: 15, color: '#666', marginTop: 4 }}>
-          Congregação → Sup. de Território → Sup. de Grupo → Dirigente
+          Congregação → Território (Sup. de Território) → Sup. de Grupo → Dirigente
         </p>
       </div>
 
@@ -242,7 +215,7 @@ export default function HierarquiaPage() {
 
       {congregacoes.length === 0 && (
         <p style={{ textAlign: 'center', color: '#888', padding: 40 }}>
-          Nenhum Sup. de Território cadastrado ainda.
+          Nenhum território cadastrado ainda.
         </p>
       )}
 
@@ -251,84 +224,74 @@ export default function HierarquiaPage() {
           <div key={cong.nome} style={{ background: '#FFFFFF', border: '0.5px solid #EEEEEE', borderRadius: 14, padding: '1.1rem 1.25rem' }}>
             <div style={{ fontSize: 13, fontWeight: 700, color: '#888', textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: 4 }}>
               🏛️ {cong.nome}
+              <span style={{ marginLeft: 8, fontSize: 12, fontWeight: 500, color: '#AAAAAA', textTransform: 'none' }}>
+                {cong.territorios.length} território{cong.territorios.length !== 1 ? 's' : ''}
+              </span>
             </div>
 
-            {cong.sts.map((no) => (
-              <div key={no.usuario.id} style={{ marginTop: 14 }}>
-                <LinhaPessoa usuario={no.usuario} sub="Sup. de Território" />
+            {cong.territorios.map((nt) => {
+              const prazo = nt.sgDataInicio ? calcularPrazoTerritorio(nt.sgDataInicio, prazoDias) : null
+              return (
+                <div key={nt.territorio.id} style={{ marginTop: 14 }}>
+                  <div style={{ fontSize: 13, fontWeight: 600, color: '#1A1A1A', display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                    🗺️ #{nt.territorio.numero} — {nt.territorio.nome}
+                    {prazo && (
+                      <span style={{
+                        fontSize: 11, fontWeight: 700, padding: '1px 8px', borderRadius: 20,
+                        background: prazo.vencido ? '#FFF0F0' : '#F7F7F7',
+                        color: prazo.vencido ? '#E05050' : '#888',
+                        border: `1px solid ${prazo.vencido ? '#FFCCCC' : '#DDDDDD'}`,
+                      }}>
+                        {formatarPrazo(prazo)}
+                      </span>
+                    )}
+                  </div>
 
-                <Galho cor={CORES_PERFIL.superintendente_territorio.acento}>
-                  {no.territorios.length === 0 && (
-                    <span style={{ fontSize: 13, color: '#AAAAAA' }}>Nenhum território criado.</span>
-                  )}
+                  <Galho cor={CORES_PERFIL.superintendente_territorio.acento}>
+                    {nt.st ? (
+                      <LinhaPessoa usuario={nt.st} sub="Sup. de Território" />
+                    ) : (
+                      <span style={{ fontSize: 13, color: '#E05050' }}>⚠️ Sem Sup. de Território dono</span>
+                    )}
 
-                  {no.territorios.map((nt) => {
-                    const prazo = nt.sgDataInicio ? calcularPrazoTerritorio(nt.sgDataInicio, prazoDias) : null
-                    return (
-                    <div key={nt.territorio.id}>
-                      <div style={{ fontSize: 13, fontWeight: 600, color: '#1A1A1A', display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-                        🗺️ #{nt.territorio.numero} — {nt.territorio.nome}
-                        {prazo && (
-                          <span style={{
-                            fontSize: 11, fontWeight: 700, padding: '1px 8px', borderRadius: 20,
-                            background: prazo.vencido ? '#FFF0F0' : '#F7F7F7',
-                            color: prazo.vencido ? '#E05050' : '#888',
-                            border: `1px solid ${prazo.vencido ? '#FFCCCC' : '#DDDDDD'}`,
-                          }}>
-                            {formatarPrazo(prazo)}
-                          </span>
-                        )}
-                      </div>
-
-                      <Galho cor={CORES_PERFIL.superintendente_grupo.acento}>
-                        {nt.sg ? (
-                          <div>
-                            <LinhaPessoa usuario={nt.sg} sub="Sup. de Grupo" />
-                            <Galho cor={CORES_PERFIL.dirigente.acento}>
-                              {nt.dirigentes.length === 0 && (
-                                <span style={{ fontSize: 13, color: '#AAAAAA' }}>Nenhum dirigente designado.</span>
-                              )}
-                              {nt.dirigentes.map(({ usuario }, i) => (
-                                <LinhaPessoa key={usuario.id + i} usuario={usuario} sub="Dirigente" />
-                              ))}
-                            </Galho>
-                          </div>
-                        ) : (
-                          <span style={{ fontSize: 13, color: '#E05050' }}>⚠️ Sem Sup. de Grupo designado</span>
-                        )}
-                      </Galho>
-                    </div>
-                    )
-                  })}
-                </Galho>
-              </div>
-            ))}
+                    <Galho cor={CORES_PERFIL.superintendente_grupo.acento}>
+                      {nt.sg ? (
+                        <div>
+                          <LinhaPessoa usuario={nt.sg} sub="Sup. de Grupo" />
+                          <Galho cor={CORES_PERFIL.dirigente.acento}>
+                            {nt.dirigentes.length === 0 && (
+                              <span style={{ fontSize: 13, color: '#AAAAAA' }}>Nenhum dirigente no grupo.</span>
+                            )}
+                            {nt.dirigentes.map((usuario) => (
+                              <LinhaPessoa key={usuario.id} usuario={usuario} sub="Dirigente" />
+                            ))}
+                          </Galho>
+                        </div>
+                      ) : (
+                        <span style={{ fontSize: 13, color: '#E05050' }}>⚠️ Sem Sup. de Grupo designado</span>
+                      )}
+                    </Galho>
+                  </Galho>
+                </div>
+              )
+            })}
           </div>
         ))}
       </div>
 
-      {/* Territórios sem ST dono */}
-      {semTerritorio.length > 0 && (
-        <div style={{ marginTop: 24, background: '#FFF8E7', border: '1px solid #F0C060', borderRadius: 12, padding: '1rem 1.25rem' }}>
-          <div style={{ fontSize: 14, fontWeight: 700, color: '#412402', marginBottom: 8 }}>⚠️ Territórios sem Sup. de Território responsável</div>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-            {semTerritorio.filter((t) => combina(t.nome)).map((t) => (
-              <span key={t.id} style={{ fontSize: 13, color: '#664400' }}>#{t.numero} — {t.nome}</span>
-            ))}
-          </div>
-        </div>
-      )}
-
       {/* Pessoas sem vínculo */}
-      {(orfaos.sgSemTerritorio.length > 0 || orfaos.dirigenteSemQuadra.length > 0) && (
+      {(orfaos.stSemTerritorio.length > 0 || orfaos.sgSemTerritorio.length > 0 || orfaos.dirigenteSemGrupo.length > 0) && (
         <div style={{ marginTop: 20, background: '#F7F7F7', border: '1px dashed #DDDDDD', borderRadius: 12, padding: '1rem 1.25rem' }}>
           <div style={{ fontSize: 14, fontWeight: 700, color: '#666', marginBottom: 12 }}>👥 Sem designação atual</div>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+            {orfaos.stSemTerritorio.filter((u) => combina(u.nome)).map((u) => (
+              <LinhaPessoa key={u.id} usuario={u} sub="Sup. de Território — sem território criado" />
+            ))}
             {orfaos.sgSemTerritorio.filter((u) => combina(u.nome)).map((u) => (
               <LinhaPessoa key={u.id} usuario={u} sub="Sup. de Grupo — sem território" />
             ))}
-            {orfaos.dirigenteSemQuadra.filter((u) => combina(u.nome)).map((u) => (
-              <LinhaPessoa key={u.id} usuario={u} sub="Dirigente — sem quadra" />
+            {orfaos.dirigenteSemGrupo.filter((u) => combina(u.nome)).map((u) => (
+              <LinhaPessoa key={u.id} usuario={u} sub="Dirigente — sem grupo" />
             ))}
           </div>
         </div>
