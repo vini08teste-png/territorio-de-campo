@@ -56,6 +56,7 @@ interface PontoParada {
   observacao: string
   idioma?: string | null
   qtd_pessoas?: number | null
+  foto?: string | null
   criado_em?: string
   usuario?: { nome: string }
 }
@@ -179,6 +180,8 @@ export default function Mapa() {
   const [pontoObs, setPontoObs] = useState('')
   const [pontoIdioma, setPontoIdioma] = useState('')
   const [pontoQtdPessoas, setPontoQtdPessoas] = useState('')
+  const [pontoFoto, setPontoFoto] = useState<string | null>(null)
+  const [enviandoFotoPonto, setEnviandoFotoPonto] = useState(false)
   const [editandoPonto, setEditandoPonto] = useState<PontoParada | null>(null)
   const [salvandoPonto, setSalvandoPonto] = useState(false)
 
@@ -215,6 +218,7 @@ export default function Mapa() {
       marker.bindPopup(`
         <div style="font-size:13px;min-width:200px;line-height:1.6">
           <b style="color:${corPino};font-size:14px">📍 Ponto de parada</b><br/>
+          ${p.foto ? `<img src="${escaparHtml(p.foto)}" alt="Foto do ponto" style="width:100%;max-height:120px;object-fit:cover;border-radius:8px;margin:4px 0" />` : ''}
           <span style="color:#555">👤 ${escaparHtml(nome)}</span><br/>
           ${data ? `<span style="color:#888">🕐 ${data}</span><br/>` : ''}
           ${temIdioma ? `<span style="display:inline-block;background:#F0EAFF;color:#6B3FD4;font-weight:600;border-radius:6px;padding:2px 8px;margin:2px 0">🌐 ${escaparHtml(p.idioma ?? '')}${p.qtd_pessoas ? ` — ${p.qtd_pessoas} pessoa${p.qtd_pessoas > 1 ? 's' : ''}` : ''}</span><br/>` : ''}
@@ -581,11 +585,29 @@ export default function Mapa() {
         setPontoObs('')
         setPontoIdioma('')
         setPontoQtdPessoas('')
+        setPontoFoto(null)
         setEditandoPonto(null)
         setModalPonto(true)
       },
       () => mostrarFeedback('⚠️ Não foi possível obter localização')
     )
+  }
+
+  async function enviarFotoPonto(e: React.ChangeEvent<HTMLInputElement>) {
+    const arquivo = e.target.files?.[0]
+    e.target.value = ''
+    if (!arquivo || !usuario) return
+
+    setEnviandoFotoPonto(true)
+    const extensao = arquivo.name.split('.').pop() || 'jpg'
+    const caminho = `pontos/${usuario.id}-${Date.now()}.${extensao}`
+    const { error: erroUpload } = await supabase.storage.from('territorios').upload(caminho, arquivo, {
+      cacheControl: '3600', upsert: false,
+    })
+    setEnviandoFotoPonto(false)
+    if (erroUpload) { mostrarFeedback('Erro ao enviar a foto.'); return }
+    const { data: publica } = supabase.storage.from('territorios').getPublicUrl(caminho)
+    setPontoFoto(publica.publicUrl)
   }
 
   async function confirmarPonto() {
@@ -601,6 +623,7 @@ export default function Mapa() {
       observacao: pontoObs.trim(),
       idioma: pontoIdioma.trim() || null,
       qtd_pessoas: pontoIdioma.trim() ? parseInt(pontoQtdPessoas, 10) : null,
+      foto: pontoFoto,
     })
     setSalvandoPonto(false)
     if (!error) {
@@ -625,6 +648,7 @@ export default function Mapa() {
         observacao: pontoObs.trim(),
         idioma: pontoIdioma.trim() || null,
         qtd_pessoas: pontoIdioma.trim() ? parseInt(pontoQtdPessoas, 10) : null,
+        foto: pontoFoto,
       }).eq('id', editandoPonto.id).select('id')
     setSalvandoPonto(false)
     if (error || !alterados?.length) {
@@ -653,7 +677,9 @@ export default function Mapa() {
 
   function editarPontoNoMapa(p: PontoParada) {
     setEditandoPonto(p); setPontoObs(p.observacao ?? ''); setPontoIdioma(p.idioma ?? '')
-    setPontoQtdPessoas(p.qtd_pessoas != null ? String(p.qtd_pessoas) : ''); setModalPonto(true)
+    setPontoQtdPessoas(p.qtd_pessoas != null ? String(p.qtd_pessoas) : '')
+    setPontoFoto(p.foto ?? null)
+    setModalPonto(true)
   }
 
   useEffect(() => {
@@ -1099,6 +1125,22 @@ export default function Mapa() {
                 disabled={!pontoIdioma.trim()} placeholder="Qtd"
                 style={{ flex: 1, padding: '12px 14px', fontSize: 15, border: '1px solid #DDD', borderRadius: 10, background: pontoIdioma.trim() ? '#FAFAFA' : '#F0F0F0', color: '#1A1A1A', outline: 'none', boxSizing: 'border-box' }} />
             </div>
+
+            <label style={{ display: 'block', fontSize: 13, fontWeight: 500, color: '#444', margin: '14px 0 8px' }}>
+              📷 Foto do ponto de referência (opcional)
+            </label>
+            {pontoFoto && (
+              // eslint-disable-next-line @next/next/no-img-element
+              <img src={pontoFoto} alt="Foto do ponto" style={{ width: '100%', maxHeight: 160, objectFit: 'cover', borderRadius: 10, marginBottom: 8, display: 'block' }} />
+            )}
+            <label style={{
+              display: 'inline-block', padding: '10px 14px', fontSize: 13, fontWeight: 600,
+              background: '#F7F7F7', color: '#1A1A1A', border: '1px solid #DDD', borderRadius: 8, cursor: 'pointer',
+            }}>
+              {enviandoFotoPonto ? 'Enviando…' : pontoFoto ? '🔁 Trocar foto' : '📷 Adicionar foto'}
+              <input type="file" accept="image/png,image/jpeg,image/webp" hidden
+                disabled={enviandoFotoPonto} onChange={(e) => void enviarFotoPonto(e)} />
+            </label>
 
             <div style={{ display: 'flex', gap: 10, marginTop: 14 }}>
               <button onClick={() => setModalPonto(false)}
