@@ -53,16 +53,27 @@ body {
 
 .leaflet-container { width: 100%; height: 100%; }
 
-/* Número do território no centro do contorno (components/Mapa.tsx) */
+/* Número + nome do território no centro do contorno (components/Mapa.tsx) */
 .leaflet-tooltip.rotulo-territorio {
-  padding: 0 6px;
+  padding: 2px 8px;
   background: rgba(255, 255, 255, 0.9);
   border: 1.5px solid #1F3A5F;
   border-radius: 6px;
   box-shadow: none;
   color: #1F3A5F;
-  font-size: 13px;
+  text-align: center;
+  line-height: 1.15;
+}
+
+.leaflet-tooltip.rotulo-territorio .rotulo-territorio-numero {
+  font-size: 15px;
   font-weight: 800;
+}
+
+.leaflet-tooltip.rotulo-territorio .rotulo-territorio-nome {
+  font-size: 9px;
+  font-weight: 700;
+  white-space: nowrap;
 }
 
 .leaflet-tooltip.rotulo-territorio::before { display: none; }

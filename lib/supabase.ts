@@ -13,6 +13,7 @@ export type Usuario = {
   email: string
   perfil: Perfil
   ativo: boolean
+  congregacao: string | null
   criado_em: string
 }
 

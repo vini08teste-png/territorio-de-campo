@@ -5,6 +5,7 @@ import { supabase, CORES_PERFIL, type Perfil } from '@/lib/supabase'
 import { usePaginaRestrita } from '@/lib/permissoes'
 import { Carregando, SemPermissao } from '@/components/EstadoPagina'
 import { calcularPrazoTerritorio, formatarPrazo } from '@/lib/prazoTerritorio'
+import { useMapaPrazoPorCongregacao } from '@/lib/congregacoes'
 
 interface UsuarioLinha {
   id: string
@@ -97,8 +98,9 @@ export default function HierarquiaPage() {
   const [territorios, setTerritorios] = useState<TerritorioLinha[]>([])
   const [designacoes, setDesignacoes] = useState<DesignacaoLinha[]>([])
   const [membros, setMembros] = useState<MembroGrupoLinha[]>([])
-  const [prazoDias, setPrazoDias] = useState(120)
+  const { prazoDe } = useMapaPrazoPorCongregacao()
   const [busca, setBusca] = useState('')
+  const [recolhidas, setRecolhidas] = useState<Set<string>>(new Set())
 
   useEffect(() => {
     if (verificandoAcesso || !autorizado) return
@@ -108,16 +110,27 @@ export default function HierarquiaPage() {
       supabase.from('territorios').select('id, nome, numero, criado_por, congregacao'),
       supabase.from('designacoes').select('usuario_id, territorio_id, data_inicio').is('quadra_id', null).is('data_fim', null),
       supabase.from('membros_grupo').select('dirigente_id, sg_id').is('data_fim', null),
-      supabase.from('configuracoes').select('prazo_territorio_dias').eq('id', 1).single(),
-    ]).then(([u, t, d, mg, c]) => {
+    ]).then(([u, t, d, mg]) => {
       setUsuarios((u.data as UsuarioLinha[]) ?? [])
       setTerritorios((t.data as TerritorioLinha[]) ?? [])
       setDesignacoes((d.data as DesignacaoLinha[]) ?? [])
       setMembros((mg.data as MembroGrupoLinha[]) ?? [])
-      setPrazoDias(c.data?.prazo_territorio_dias ?? 120)
+      const nomesCongregacoes = new Set(
+        ((t.data as TerritorioLinha[]) ?? []).map((terr) => terr.congregacao?.trim() || 'Sem congregação definida')
+      )
+      setRecolhidas(nomesCongregacoes)
       setCarregando(false)
     })
   }, [verificandoAcesso, autorizado])
+
+  function alternarRecolhida(nome: string) {
+    setRecolhidas((prev) => {
+      const novo = new Set(prev)
+      if (novo.has(nome)) novo.delete(nome)
+      else novo.add(nome)
+      return novo
+    })
+  }
 
   const { congregacoes, orfaos } = useMemo(() => {
     const usuarioPorId = new Map(usuarios.map((u) => [u.id, u]))
@@ -146,8 +159,24 @@ export default function HierarquiaPage() {
       usadosComoDirigente.add(dirigente.id)
     }
 
+    // ST responsável: quem criou o território OU qualquer ST da mesma congregação
+    const stsPorCongregacao = new Map<string, UsuarioLinha[]>()
+    for (const u of usuarios) {
+      if (u.perfil !== 'superintendente_territorio') continue
+      const chave = u.congregacao?.trim() || ''
+      if (!chave) continue
+      const lista = stsPorCongregacao.get(chave) ?? []
+      lista.push(u)
+      stsPorCongregacao.set(chave, lista)
+    }
+
     function montarNoTerritorio(t: TerritorioLinha): NoTerritorio {
-      const st = t.criado_por ? usuarioPorId.get(t.criado_por) ?? null : null
+      let st = t.criado_por ? usuarioPorId.get(t.criado_por) ?? null : null
+      if (!st) {
+        const chave = t.congregacao?.trim() || ''
+        const candidatos = chave ? stsPorCongregacao.get(chave) ?? [] : []
+        st = candidatos[0] ?? null
+      }
       const sg = sgPorTerritorio.get(t.id) ?? null
       const sgDataInicio = sgDataInicioPorTerritorio.get(t.id) ?? null
       const dirigentes = sg ? dirigentesPorSG.get(sg.id) ?? [] : []
@@ -172,8 +201,13 @@ export default function HierarquiaPage() {
     // Quem ficou de fora da árvore inteira
     const sgSemTerritorio = usuarios.filter((u) => u.perfil === 'superintendente_grupo' && !usadosComoSG.has(u.id))
     const dirigenteSemGrupo = usuarios.filter((u) => u.perfil === 'dirigente' && !usadosComoDirigente.has(u.id))
-    const stSemTerritorio = usuarios.filter((u) =>
-      u.perfil === 'superintendente_territorio' && !territorios.some((t) => t.criado_por === u.id))
+    const stSemTerritorio = usuarios.filter((u) => {
+      if (u.perfil !== 'superintendente_territorio') return false
+      const chave = u.congregacao?.trim() || ''
+      const temPorCriacao = territorios.some((t) => t.criado_por === u.id)
+      const temPorCongregacao = chave && territorios.some((t) => (t.congregacao?.trim() || '') === chave)
+      return !temPorCriacao && !temPorCongregacao
+    })
 
     return {
       congregacoes: congregacoesMontadas,
@@ -219,18 +253,41 @@ export default function HierarquiaPage() {
         </p>
       )}
 
+      {congregacoes.length > 0 && (
+        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10, marginBottom: 10 }}>
+          <button
+            onClick={() => setRecolhidas(new Set())}
+            style={{ fontSize: 12, fontWeight: 600, color: '#666', background: 'none', border: 'none', cursor: 'pointer', padding: 4 }}
+          >
+            Expandir tudo
+          </button>
+          <button
+            onClick={() => setRecolhidas(new Set(congregacoes.map((c) => c.nome)))}
+            style={{ fontSize: 12, fontWeight: 600, color: '#666', background: 'none', border: 'none', cursor: 'pointer', padding: 4 }}
+          >
+            Recolher tudo
+          </button>
+        </div>
+      )}
+
       <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
-        {congregacoes.map((cong) => (
+        {congregacoes.map((cong) => {
+          const recolhida = recolhidas.has(cong.nome)
+          return (
           <div key={cong.nome} style={{ background: '#FFFFFF', border: '0.5px solid #EEEEEE', borderRadius: 14, padding: '1.1rem 1.25rem' }}>
-            <div style={{ fontSize: 13, fontWeight: 700, color: '#888', textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: 4 }}>
+            <div
+              onClick={() => alternarRecolhida(cong.nome)}
+              style={{ fontSize: 13, fontWeight: 700, color: '#888', textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: 4, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 6, userSelect: 'none' }}
+            >
+              <span style={{ display: 'inline-block', transition: 'transform 0.15s', transform: recolhida ? 'rotate(-90deg)' : 'rotate(0deg)' }}>▾</span>
               🏛️ {cong.nome}
-              <span style={{ marginLeft: 8, fontSize: 12, fontWeight: 500, color: '#AAAAAA', textTransform: 'none' }}>
+              <span style={{ fontSize: 12, fontWeight: 500, color: '#AAAAAA', textTransform: 'none' }}>
                 {cong.territorios.length} território{cong.territorios.length !== 1 ? 's' : ''}
               </span>
             </div>
 
-            {cong.territorios.map((nt) => {
-              const prazo = nt.sgDataInicio ? calcularPrazoTerritorio(nt.sgDataInicio, prazoDias) : null
+            {!recolhida && cong.territorios.map((nt) => {
+              const prazo = nt.sgDataInicio ? calcularPrazoTerritorio(nt.sgDataInicio, prazoDe(nt.territorio.congregacao)) : null
               return (
                 <div key={nt.territorio.id} style={{ marginTop: 14 }}>
                   <div style={{ fontSize: 13, fontWeight: 600, color: '#1A1A1A', display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
@@ -276,7 +333,8 @@ export default function HierarquiaPage() {
               )
             })}
           </div>
-        ))}
+          )
+        })}
       </div>
 
       {/* Pessoas sem vínculo */}

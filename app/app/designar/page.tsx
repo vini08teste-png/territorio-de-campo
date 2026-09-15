@@ -13,6 +13,7 @@ interface Usuario {
   email: string
   perfil: Perfil
   ativo: boolean
+  congregacao?: string | null
 }
 
 interface Territorio {
@@ -21,6 +22,7 @@ interface Territorio {
   numero: number
   bairro: string
   status: string
+  congregacao?: string | null
 }
 
 interface Designacao {
@@ -41,6 +43,10 @@ interface MembroGrupo {
   data_fim: string | null
   dirigente?: Usuario
   sg?: Usuario
+}
+
+function mesmaCongregacao(a?: string | null, b?: string | null) {
+  return (a ?? '').trim().toLowerCase() === (b ?? '').trim().toLowerCase()
 }
 
 const LABEL_PERFIL: Record<string, string> = {
@@ -186,6 +192,12 @@ export default function DesignarPage() {
       mostrarErro('Selecione o território e o Sup. de Grupo.')
       return
     }
+    const territorio = territorios.find((t) => t.id === formST.territorio_id)
+    const sg = sgsAtivos.find((u) => u.id === formST.usuario_id)
+    if (!mesmaCongregacao(territorio?.congregacao, sg?.congregacao)) {
+      mostrarErro('Este Sup. de Grupo não é da mesma congregação do território.')
+      return
+    }
     const { data: existente } = await supabase.from('designacoes').select('id')
       .eq('territorio_id', formST.territorio_id).is('data_fim', null)
     if (existente && existente.length > 0) {
@@ -218,6 +230,13 @@ export default function DesignarPage() {
     const sgId = isSG ? usuarioAtual!.id : formGrupo.sg_id
     if (!sgId || !formGrupo.dirigente_id) {
       mostrarErro(isSG ? 'Selecione o dirigente.' : 'Selecione o Sup. de Grupo e o dirigente.')
+      return
+    }
+
+    const sg = isSG ? usuarioAtual! : sgsAtivos.find((u) => u.id === sgId)
+    const dirigente = dirigentesAtivos.find((u) => u.id === formGrupo.dirigente_id)
+    if (!mesmaCongregacao(sg?.congregacao, dirigente?.congregacao)) {
+      mostrarErro('Este dirigente não é da mesma congregação do Sup. de Grupo.')
       return
     }
 
@@ -328,8 +347,11 @@ export default function DesignarPage() {
                   style={{ width: '100%', padding: '12px 14px', fontSize: 16, border: '1px solid #DDDDDD', borderRadius: 8, background: '#FAFAFA', color: '#1A1A1A' }}
                 >
                   <option value="">— Selecione o Sup. de Grupo —</option>
-                  {sgsAtivos.map((u) => <option key={u.id} value={u.id}>{u.nome}</option>)}
+                  {sgsAtivos
+                    .filter((u) => !formST.territorio_id || mesmaCongregacao(u.congregacao, territorios.find((t) => t.id === formST.territorio_id)?.congregacao))
+                    .map((u) => <option key={u.id} value={u.id}>{u.nome}</option>)}
                 </select>
+                <p style={{ fontSize: 12, color: '#999', marginTop: 6 }}>Só aparecem Sup. de Grupo da mesma congregação do território.</p>
               </div>
               <button
                 onClick={() => void designarSG()}
@@ -370,18 +392,26 @@ export default function DesignarPage() {
               )}
               <div>
                 <label style={{ display: 'block', fontSize: 14, fontWeight: 500, color: '#444', marginBottom: 6 }}>Dirigente</label>
-                {dirigentesAtivos.length === 0 ? (
-                  <p style={{ color: '#999', fontSize: 15, margin: 0 }}>Nenhum dirigente ativo cadastrado.</p>
-                ) : (
-                  <select
-                    value={formGrupo.dirigente_id}
-                    onChange={(e) => setFormGrupo((f) => ({ ...f, dirigente_id: e.target.value }))}
-                    style={{ width: '100%', padding: '12px 14px', fontSize: 16, border: '1px solid #DDDDDD', borderRadius: 8, background: '#FAFAFA', color: '#1A1A1A' }}
-                  >
-                    <option value="">— Selecione o dirigente —</option>
-                    {dirigentesAtivos.map((u) => <option key={u.id} value={u.id}>{u.nome}</option>)}
-                  </select>
-                )}
+                {(() => {
+                  const congregacaoAlvo = isSG ? usuarioAtual?.congregacao : sgsAtivos.find((u) => u.id === formGrupo.sg_id)?.congregacao
+                  const dirigentesFiltrados = dirigentesAtivos.filter((u) => !congregacaoAlvo || mesmaCongregacao(u.congregacao, congregacaoAlvo))
+                  if (dirigentesAtivos.length === 0) {
+                    return <p style={{ color: '#999', fontSize: 15, margin: 0 }}>Nenhum dirigente ativo cadastrado.</p>
+                  }
+                  return (
+                    <>
+                      <select
+                        value={formGrupo.dirigente_id}
+                        onChange={(e) => setFormGrupo((f) => ({ ...f, dirigente_id: e.target.value }))}
+                        style={{ width: '100%', padding: '12px 14px', fontSize: 16, border: '1px solid #DDDDDD', borderRadius: 8, background: '#FAFAFA', color: '#1A1A1A' }}
+                      >
+                        <option value="">— Selecione o dirigente —</option>
+                        {dirigentesFiltrados.map((u) => <option key={u.id} value={u.id}>{u.nome}</option>)}
+                      </select>
+                      <p style={{ fontSize: 12, color: '#999', marginTop: 6 }}>Só aparecem dirigentes da mesma congregação do Sup. de Grupo.</p>
+                    </>
+                  )
+                })()}
               </div>
               <button
                 onClick={() => void adicionarMembro()}

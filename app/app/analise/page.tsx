@@ -62,19 +62,28 @@ export default function AnalisePage() {
 
   // Só é chamada depois que o acesso foi verificado (ver useEffect abaixo)
   const carregar = useCallback(async () => {
-    const [{ data: territorios }, { data: quadras }, { data: designacoesSG }, { data: config }] = await Promise.all([
+    const [{ data: territorios }, { data: quadras }, { data: designacoesSG }, { data: congregacoes }] = await Promise.all([
       supabase.from('territorios').select('*').order('numero'),
       supabase.from('quadras').select('*'),
       supabase.from('designacoes').select('territorio_id, data_inicio').is('quadra_id', null).is('data_fim', null),
-      supabase.from('configuracoes').select('prazo_territorio_dias').eq('id', 1).single(),
+      supabase.from('congregacoes').select('nome, prazo_territorio_dias'),
     ])
 
     if (!territorios || !quadras) { setLoading(false); return }
 
-    const prazoDias = config?.prazo_territorio_dias ?? 120
+    const prazoPorCongregacao = new Map<string, number>()
+    for (const c of congregacoes ?? []) {
+      prazoPorCongregacao.set((c.nome ?? '').trim().toLowerCase(), c.prazo_territorio_dias ?? 120)
+    }
+    const congregacaoPorTerritorio = new Map((territorios as Territorio[]).map((t) => [t.id, t.congregacao]))
+    function prazoDoTerritorio(territorioId: string) {
+      const nome = (congregacaoPorTerritorio.get(territorioId) ?? '').trim().toLowerCase()
+      return prazoPorCongregacao.get(nome) ?? 120
+    }
+
     const vencidoPorTerritorio = new Map<string, boolean>()
     for (const d of designacoesSG ?? []) {
-      if (calcularPrazoTerritorio(d.data_inicio, prazoDias).vencido) {
+      if (calcularPrazoTerritorio(d.data_inicio, prazoDoTerritorio(d.territorio_id)).vencido) {
         vencidoPorTerritorio.set(d.territorio_id, true)
       }
     }

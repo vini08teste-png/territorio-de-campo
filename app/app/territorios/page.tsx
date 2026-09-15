@@ -5,7 +5,9 @@ import Link from 'next/link'
 import { supabase, CORES_STATUS, type Territorio, type Quadra } from '@/lib/supabase'
 import { usePaginaRestrita } from '@/lib/permissoes'
 import { Carregando, SemPermissao } from '@/components/EstadoPagina'
+import SeletorCongregacao from '@/components/SeletorCongregacao'
 import { calcularPrazoTerritorio, formatarPrazo } from '@/lib/prazoTerritorio'
+import { useMapaPrazoPorCongregacao } from '@/lib/congregacoes'
 import {
   formatarNumeroTerritorio, lerTerritoriosDoGeoJSON, linkComoChegar,
   textoOuNulo, type TerritorioImportado,
@@ -69,12 +71,13 @@ function mensagemDeErro(erro: unknown): string {
 }
 
 export default function TerritoriosPage() {
-  const { carregando: verificandoAcesso, autorizado } = usePaginaRestrita(['superintendente_territorio', 'admin'])
+  const { usuario, carregando: verificandoAcesso, autorizado } = usePaginaRestrita(['superintendente_territorio', 'admin'])
+  const souAdmin = usuario?.perfil === 'admin'
   const [territorios, setTerritorios] = useState<Territorio[]>([])
   const [quadras, setQuadras] = useState<Quadra[]>([])
   const [designacoesSG, setDesignacoesSG] = useState<DesignacaoSG[]>([])
   const [pontosIdioma, setPontosIdioma] = useState<PontoIdioma[]>([])
-  const [prazoDias, setPrazoDias] = useState(120)
+  const { prazoDe } = useMapaPrazoPorCongregacao()
   const [criando, setCriando] = useState(false)
   const [form, setForm] = useState<FormTerritorio>(FORM_VAZIO)
   const [editandoTerr, setEditandoTerr] = useState<Territorio | null>(null)
@@ -93,13 +96,11 @@ export default function TerritoriosPage() {
       supabase.from('territorios').select('*').order('numero'),
       supabase.from('quadras').select('*').order('nome'),
       supabase.from('designacoes').select('territorio_id, data_inicio').is('quadra_id', null).is('data_fim', null),
-      supabase.from('configuracoes').select('prazo_territorio_dias').eq('id', 1).single(),
       supabase.from('pontos_parada').select('quadra_id, idioma, qtd_pessoas').not('idioma', 'is', null),
-    ]).then(([t, q, d, c, pi]) => {
+    ]).then(([t, q, d, pi]) => {
       setTerritorios(t.data ?? [])
       setQuadras(q.data ?? [])
       setDesignacoesSG((d.data as DesignacaoSG[]) ?? [])
-      setPrazoDias(c.data?.prazo_territorio_dias ?? 120)
       setPontosIdioma((pi.data as PontoIdioma[]) ?? [])
     })
   }, [])
@@ -112,8 +113,14 @@ export default function TerritoriosPage() {
     e.preventDefault()
     setSalvando(true)
     const { data: { user } } = await supabase.auth.getUser()
+    const campos = camposDoFormulario(form)
     const { data, error } = await supabase.from('territorios')
-      .insert({ ...camposDoFormulario(form), status: 'nao_iniciado', criado_por: user?.id })
+      .insert({
+        ...campos,
+        congregacao: souAdmin ? campos.congregacao : usuario?.congregacao ?? null,
+        status: 'nao_iniciado',
+        criado_por: user?.id,
+      })
       .select().single()
     setSalvando(false)
     if (error) { mostrarErro('Erro ao criar território.'); return }
@@ -156,7 +163,10 @@ export default function TerritoriosPage() {
     e.preventDefault()
     if (!editandoTerr) return
     setSalvando(true)
-    const campos = camposDoFormulario(formEdit)
+    const campos = {
+      ...camposDoFormulario(formEdit),
+      ...(souAdmin ? {} : { congregacao: usuario?.congregacao ?? null }),
+    }
     const { error } = await supabase.from('territorios').update(campos).eq('id', editandoTerr.id)
     setSalvando(false)
     if (error) { mostrarErro('Erro ao salvar.'); return }
@@ -228,6 +238,7 @@ export default function TerritoriosPage() {
         bairro: item.localidade,
         status: 'nao_iniciado',
         criado_por: user?.id,
+        congregacao: souAdmin ? null : usuario?.congregacao ?? null,
       }).select().single()
       if (error || !data) { falhas++; continue }
       lista.push(data as Territorio)
@@ -343,7 +354,10 @@ export default function TerritoriosPage() {
           <input type="file" accept=".geojson,.json,application/geo+json,application/json" hidden
             disabled={importando} onChange={(e) => void importarContornos(e)} />
         </label>
-        <button onClick={() => setCriando(!criando)} style={{
+        <button onClick={() => {
+          if (!criando && !souAdmin) setForm((p) => ({ ...p, congregacao: usuario?.congregacao ?? '' }))
+          setCriando(!criando)
+        }} style={{
           padding: '10px 18px', fontSize: 14, fontWeight: 600,
           background: criando ? '#F7F7F7' : '#3BAD68', color: criando ? '#555' : '#fff',
           border: criando ? '0.5px solid #DDD' : 'none', borderRadius: 10, cursor: 'pointer',
@@ -378,7 +392,7 @@ export default function TerritoriosPage() {
               <input value={form.bairro} onChange={(e) => setForm((p) => ({ ...p, bairro: e.target.value }))} required placeholder="Ex: Bom Jardim"
                 style={{ width: '100%', padding: '11px 14px', fontSize: 15, border: '1px solid #DDD', borderRadius: 8, background: '#FAFAFA', outline: 'none', boxSizing: 'border-box' }} />
             </div>
-            <CamposExtras valores={form} alterar={(campo, valor) => setForm((p) => ({ ...p, [campo]: valor }))} />
+            <CamposExtras valores={form} alterar={(campo, valor) => setForm((p) => ({ ...p, [campo]: valor }))} souAdmin={souAdmin} />
             <button type="submit" disabled={salvando} style={{
               padding: '13px', fontSize: 15, fontWeight: 600,
               background: salvando ? '#CCC' : '#3BAD68', color: '#fff',
@@ -461,7 +475,7 @@ export default function TerritoriosPage() {
           const corPct = pct >= 100 ? '#3BAD68' : pct > 50 ? '#F0A030' : '#888'
           const aberto = expandido === t.id
           const designacao = designacoesSG.find((d) => d.territorio_id === t.id)
-          const prazo = designacao ? calcularPrazoTerritorio(designacao.data_inicio, prazoDias) : null
+          const prazo = designacao ? calcularPrazoTerritorio(designacao.data_inicio, prazoDe(t.congregacao)) : null
           const rota = linkComoChegar(t)
           const idiomaTerr = idiomaPorTerritorio(t.id)
 
@@ -532,7 +546,11 @@ export default function TerritoriosPage() {
                     background: '#F0EAFF', color: '#6B3FD4', textDecoration: 'none',
                     border: '0.5px solid #D9C6FF', borderRadius: 8,
                   }}>🖨️ Cartão</Link>
-                  <button onClick={() => { setEditandoTerr(t); setFormEdit(formularioDoTerritorio(t)) }} style={{
+                  <button onClick={() => {
+                    setEditandoTerr(t)
+                    const formulario = formularioDoTerritorio(t)
+                    setFormEdit(souAdmin ? formulario : { ...formulario, congregacao: usuario?.congregacao ?? formulario.congregacao })
+                  }} style={{
                     padding: '8px 14px', fontSize: 13, fontWeight: 500,
                     background: '#F7F7F7', color: '#1A1A1A',
                     border: '0.5px solid #DDD', borderRadius: 8, cursor: 'pointer',
@@ -621,7 +639,7 @@ export default function TerritoriosPage() {
                 <input value={formEdit.bairro} onChange={(e) => setFormEdit((p) => ({ ...p, bairro: e.target.value }))} required
                   style={{ width: '100%', padding: '11px 14px', fontSize: 15, border: '1px solid #DDD', borderRadius: 8, background: '#FAFAFA', outline: 'none', boxSizing: 'border-box' }} />
               </div>
-              <CamposExtras valores={formEdit} alterar={(campo, valor) => setFormEdit((p) => ({ ...p, [campo]: valor }))} />
+              <CamposExtras valores={formEdit} alterar={(campo, valor) => setFormEdit((p) => ({ ...p, [campo]: valor }))} souAdmin={souAdmin} />
 
               <div>
                 <label style={{ display: 'block', fontSize: 13, fontWeight: 500, color: '#444', marginBottom: 6 }}>Foto do marco</label>
@@ -686,9 +704,10 @@ export default function TerritoriosPage() {
 }
 
 // Link do QR code (legenda do mapa geral e cartão S-12-T) e congregação
-function CamposExtras({ valores, alterar }: {
+function CamposExtras({ valores, alterar, souAdmin }: {
   valores: FormTerritorio
   alterar: (campo: CampoExtra, valor: string) => void
+  souAdmin: boolean
 }) {
   const estiloRotulo = { display: 'block', fontSize: 13, fontWeight: 500, color: '#444', marginBottom: 6 }
   const estiloCampo = {
@@ -704,11 +723,23 @@ function CamposExtras({ valores, alterar }: {
       </div>
       <div>
         <label style={estiloRotulo}>Congregação</label>
-        <input value={valores.congregacao} placeholder="Ex: Central"
-          onChange={(e) => alterar('congregacao', e.target.value)} style={estiloCampo} />
-        <p style={{ fontSize: 12, color: '#999', margin: '6px 0 0' }}>
-          Só quem é dessa congregação (e o admin) enxerga este território.
-        </p>
+        {souAdmin ? (
+          <>
+            <SeletorCongregacao valor={valores.congregacao} onChange={(v) => alterar('congregacao', v)} style={estiloCampo} />
+            <p style={{ fontSize: 12, color: '#999', margin: '6px 0 0' }}>
+              Só quem é dessa congregação (e o admin) enxerga este território.
+            </p>
+          </>
+        ) : (
+          <>
+            <div style={{ ...estiloCampo, color: '#666', display: 'flex', alignItems: 'center', gap: 6 }}>
+              🏛️ {valores.congregacao || '— sua congregação não está definida —'}
+            </div>
+            <p style={{ fontSize: 12, color: '#999', margin: '6px 0 0' }}>
+              Herdada da sua congregação — só o admin pode mudar isso.
+            </p>
+          </>
+        )}
       </div>
     </>
   )

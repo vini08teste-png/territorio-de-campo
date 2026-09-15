@@ -134,6 +134,8 @@ export default function Mapa() {
   const [territorioFiltro, setTerritorioFiltro] = useState('')
   const [quadraAtiva, setQuadraAtiva] = useState<Quadra | null>(null)
   const [painelAberto, setPainelAberto] = useState(false)
+  const [ultimoTrabalho, setUltimoTrabalho] = useState<{ quadraId: string; quadraNome: string; territorioId: string } | null>(null)
+  const [ultimoTrabalhoFechado, setUltimoTrabalhoFechado] = useState(false)
   const [modoDesenho, setModoDesenho] = useState(false)
   const [salvando, setSalvando] = useState(false)
   const [feedback, setFeedback] = useState<string | null>(null)
@@ -260,6 +262,37 @@ export default function Mapa() {
     if (layer) m.fitBounds(layer.getBounds(), { maxZoom: 17, padding: [24, 24] })
   }, [territorioFiltro, aplicarFiltroTerritorio])
 
+  // "Onde parei": última quadra que esse usuário marcou, pra retomar rápido
+  // em vez de procurar no mapa de novo.
+  useEffect(() => {
+    if (!usuario) return
+    let cancelado = false
+    supabase.from('marcacoes')
+      .select('quadra_id, criado_em, quadras(id, nome, territorio_id)')
+      .eq('usuario_id', usuario.id)
+      .order('criado_em', { ascending: false })
+      .limit(1)
+      .maybeSingle()
+      .then(({ data }) => {
+        if (cancelado || !data) return
+        const q = (data as any).quadras as { id: string; nome: string; territorio_id: string | null } | null
+        if (!q?.territorio_id) return
+        setUltimoTrabalho({ quadraId: q.id, quadraNome: q.nome, territorioId: q.territorio_id })
+      })
+    return () => { cancelado = true }
+  }, [usuario])
+
+  function continuarDeOndeParou() {
+    if (!ultimoTrabalho) return
+    const m = mapInstanceRef.current
+    const layer = layersRef.current.find((l: any) => l._quadra?.id === ultimoTrabalho.quadraId)
+    setTerritorioFiltro(ultimoTrabalho.territorioId)
+    if (layer && m) {
+      m.fitBounds(layer.getBounds(), { maxZoom: 18, padding: [40, 40] })
+      abrirPainelQuadra(layer._quadra)
+    }
+  }
+
   // ── Seleção por área ─────────────────────────────────────────────────────────
   // Clique em quadra durante o modo seleção alterna ela dentro/fora do grupo,
   // em vez de abrir o painel de detalhe. Só quadra sem território entra.
@@ -313,7 +346,12 @@ export default function Mapa() {
         pane: 'territorios',
         style: { color: '#1F3A5F', weight: 3, fillColor: corDoProgresso(progresso), fillOpacity: 0.2 },
       }).addTo(m)
-      layer.bindTooltip(String(t.numero), { permanent: true, direction: 'center', className: 'rotulo-territorio' })
+      const nomeRotulo = escaparHtml((t.nome || '').toUpperCase())
+      layer.bindTooltip(
+        `<div class="rotulo-territorio-numero">${escaparHtml(String(t.numero))}</div>` +
+        (nomeRotulo ? `<div class="rotulo-territorio-nome">${nomeRotulo}</div>` : ''),
+        { permanent: true, direction: 'center', className: 'rotulo-territorio' }
+      )
       layer.bindPopup(popupDoTerritorio(t, progresso, quadrasDoTerritorio.length), { maxWidth: 260 })
       // Tocar no território aproxima o mapa nas quadras dele
       layer.on('click', () => m.fitBounds(layer.getBounds(), { maxZoom: 17, padding: [24, 24] }))
@@ -669,6 +707,35 @@ export default function Mapa() {
   return (
     <div style={{ position: 'relative', width: '100%', height: '100%' }}>
       <div ref={mapRef} style={{ width: '100%', height: '100%' }} />
+
+      {/* Onde parei */}
+      {!modoDesenho && !modalCriar && !modalPonto && !painelOSM && !modoSelecao && !painelAberto && ultimoTrabalho && !ultimoTrabalhoFechado && (
+        <div style={{
+          position: 'absolute', top: 10, right: 10, zIndex: 900,
+          display: 'flex', alignItems: 'center', gap: 6,
+          background: '#fff', border: '1px solid #DDD', borderRadius: 8,
+          boxShadow: '0 1px 4px rgba(0,0,0,0.15)', padding: '6px 6px 6px 12px',
+          maxWidth: 240,
+        }}>
+          <button
+            onClick={continuarDeOndeParou}
+            style={{
+              display: 'flex', flexDirection: 'column', alignItems: 'flex-start', gap: 1,
+              background: 'none', border: 'none', cursor: 'pointer', padding: 0, textAlign: 'left',
+            }}
+          >
+            <span style={{ fontSize: 11, color: '#888', fontWeight: 500 }}>▶ Continuar de onde parei</span>
+            <span style={{ fontSize: 13, color: '#1A1A1A', fontWeight: 700 }}>{ultimoTrabalho.quadraNome}</span>
+          </button>
+          <button
+            onClick={() => setUltimoTrabalhoFechado(true)}
+            title="Fechar"
+            style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#AAA', fontSize: 14, padding: '4px 6px', flexShrink: 0 }}
+          >
+            ✕
+          </button>
+        </div>
+      )}
 
       {/* Filtro: ver só um território */}
       {!modoDesenho && !modalCriar && !modalPonto && !painelOSM && !modoSelecao && territoriosCarregados && territorios.length > 0 && (

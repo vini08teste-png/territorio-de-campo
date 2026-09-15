@@ -5,16 +5,16 @@ import { supabase, CORES_PERFIL, type Usuario, type Perfil } from '@/lib/supabas
 import { getAccessToken } from '@/lib/auth'
 import { usePaginaRestrita } from '@/lib/permissoes'
 import { Carregando, SemPermissao } from '@/components/EstadoPagina'
+import SeletorCongregacao from '@/components/SeletorCongregacao'
 import Link from 'next/link'
 
-interface UsuarioComCongregacao extends Usuario {
-  congregacao?: string
-}
+type UsuarioComCongregacao = Usuario
 
 interface TerritorioOpcao {
   id: string
   nome: string
   numero: string
+  congregacao: string | null
 }
 
 const PERFIS: { value: Perfil; label: string }[] = [
@@ -29,6 +29,7 @@ export default function UsuariosPage() {
   const [usuarios, setUsuarios] = useState<UsuarioComCongregacao[]>([])
   const [carregando, setCarregando] = useState(true)
   const [busca, setBusca] = useState('')
+  const [recolhidas, setRecolhidas] = useState<Set<string>>(new Set())
   const [editando, setEditando] = useState<UsuarioComCongregacao | null>(null)
   const [novoNome, setNovoNome] = useState('')
   const [novoEmail, setNovoEmail] = useState('')
@@ -53,10 +54,14 @@ export default function UsuariosPage() {
     if (verificandoAcesso || !autorizado) return
     void Promise.all([
       supabase.from('usuarios').select('*').order('nome'),
-      supabase.from('territorios').select('id, nome, numero').order('numero'),
+      supabase.from('territorios').select('id, nome, numero, congregacao').order('numero'),
     ]).then(([u, t]) => {
       setUsuarios(u.data ?? [])
       setTerritorios((t.data as TerritorioOpcao[]) ?? [])
+      const nomesCongregacoes = new Set(
+        (u.data ?? []).map((usu: UsuarioComCongregacao) => usu.congregacao?.trim() || 'Sem congregação definida')
+      )
+      setRecolhidas(nomesCongregacoes)
       setCarregando(false)
     })
   }, [verificandoAcesso, autorizado])
@@ -185,9 +190,11 @@ export default function UsuariosPage() {
       }
 
       if (novoPerfil === 'superintendente_grupo') {
+        // Só pode ficar designado a territórios da própria congregação
+        const idsDaCongregacao = new Set(territoriosDaCongregacaoSelecionada.map((t) => t.id))
         const valoresOriginais = new Set(designacoesAtuais.map((d) => d.valor))
-        const paraAdicionar = [...designacoesSelecionadas].filter((v) => !valoresOriginais.has(v))
-        const paraRemover = designacoesAtuais.filter((d) => !designacoesSelecionadas.has(d.valor))
+        const paraAdicionar = [...designacoesSelecionadas].filter((v) => idsDaCongregacao.has(v) && !valoresOriginais.has(v))
+        const paraRemover = designacoesAtuais.filter((d) => !designacoesSelecionadas.has(d.valor) || !idsDaCongregacao.has(d.valor))
 
         if (paraAdicionar.length > 0) {
           const { data: conflitos } = await supabase
@@ -220,6 +227,14 @@ export default function UsuariosPage() {
           await supabase.from('membros_grupo').update({ data_fim: new Date().toISOString() }).eq('id', grupoAtualId)
         }
       } else if (novoPerfil === 'dirigente') {
+        // Só pode entrar num grupo cujo Sup. de Grupo seja da mesma congregação
+        const sgSelecionado = usuarios.find((u) => u.id === grupoSgSelecionado)
+        const sgMesmaCongregacao = sgSelecionado &&
+          (sgSelecionado.congregacao ?? '').trim().toLowerCase() === novaCongregacao.trim().toLowerCase()
+        if (grupoSgSelecionado && !sgMesmaCongregacao) {
+          mostrarErro('O Sup. de Grupo escolhido não é da mesma congregação dessa pessoa.')
+          return
+        }
         if (grupoSgSelecionado !== (grupoAtualSgId ?? '')) {
           if (grupoAtualId) {
             await supabase.from('membros_grupo').update({ data_fim: new Date().toISOString() }).eq('id', grupoAtualId)
@@ -301,6 +316,10 @@ export default function UsuariosPage() {
     }
   }
 
+  const territoriosDaCongregacaoSelecionada = territorios.filter(
+    (t) => (t.congregacao ?? '').trim().toLowerCase() === novaCongregacao.trim().toLowerCase()
+  )
+
   const termo = busca.trim().toLowerCase()
 
   const filtrados = usuarios.filter((u) =>
@@ -321,6 +340,15 @@ export default function UsuariosPage() {
       .map(([nome, us]) => ({ nome, usuarios: us }))
       .sort((a, b) => a.nome.localeCompare(b.nome))
   })()
+
+  function alternarRecolhida(nome: string) {
+    setRecolhidas((prev) => {
+      const novo = new Set(prev)
+      if (novo.has(nome)) novo.delete(nome)
+      else novo.add(nome)
+      return novo
+    })
+  }
 
   if (verificandoAcesso) return <Carregando />
   if (!autorizado) return <SemPermissao />
@@ -414,17 +442,41 @@ export default function UsuariosPage() {
           flexDirection: 'column',
           gap: 24,
         }}>
-        {gruposPorCongregacao.map((grupo) => (
+        {gruposPorCongregacao.length > 0 && (
+          <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10 }}>
+            <button
+              onClick={() => setRecolhidas(new Set())}
+              style={{ fontSize: 12, fontWeight: 600, color: '#666', background: 'none', border: 'none', cursor: 'pointer', padding: 4 }}
+            >
+              Expandir tudo
+            </button>
+            <button
+              onClick={() => setRecolhidas(new Set(gruposPorCongregacao.map((g) => g.nome)))}
+              style={{ fontSize: 12, fontWeight: 600, color: '#666', background: 'none', border: 'none', cursor: 'pointer', padding: 4 }}
+            >
+              Recolher tudo
+            </button>
+          </div>
+        )}
+        {gruposPorCongregacao.map((grupo) => {
+        const recolhida = recolhidas.has(grupo.nome)
+        return (
         <div key={grupo.nome}>
-          <h2 style={{
-            fontSize: 13, fontWeight: 700, color: '#888', textTransform: 'uppercase',
-            letterSpacing: '0.5px', marginBottom: 10, display: 'flex', alignItems: 'center', gap: 8,
-          }}>
+          <h2
+            onClick={() => alternarRecolhida(grupo.nome)}
+            style={{
+              fontSize: 13, fontWeight: 700, color: '#888', textTransform: 'uppercase',
+              letterSpacing: '0.5px', marginBottom: 10, display: 'flex', alignItems: 'center', gap: 8,
+              cursor: 'pointer', userSelect: 'none',
+            }}
+          >
+            <span style={{ display: 'inline-block', transition: 'transform 0.15s', transform: recolhida ? 'rotate(-90deg)' : 'rotate(0deg)' }}>▾</span>
             🏛️ {grupo.nome}
             <span style={{ fontWeight: 500, textTransform: 'none', color: '#AAAAAA' }}>
               {grupo.usuarios.length} usuário{grupo.usuarios.length !== 1 ? 's' : ''}
             </span>
           </h2>
+          {!recolhida && (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
           {grupo.usuarios.map((u) => {
             const cores = CORES_PERFIL[u.perfil]
@@ -550,8 +602,10 @@ export default function UsuariosPage() {
             )
           })}
           </div>
+          )}
         </div>
-        ))}
+        )
+        })}
 
           {filtrados.length === 0 && (
             <p style={{
@@ -704,23 +758,7 @@ export default function UsuariosPage() {
                 Congregação
               </label>
 
-              <input
-                type="text"
-                value={novaCongregacao}
-                onChange={(e) => setNovaCongregacao(e.target.value)}
-                placeholder="ex: Congregação Central"
-                style={{
-                  width: '100%',
-                  padding: '11px 14px',
-                  fontSize: 15,
-                  border: '1px solid #DDDDDD',
-                  borderRadius: 8,
-                  background: '#FAFAFA',
-                  color: '#1A1A1A',
-                  outline: 'none',
-                  boxSizing: 'border-box',
-                }}
-              />
+              <SeletorCongregacao valor={novaCongregacao} onChange={setNovaCongregacao} />
             </div>
 
             <div style={{ marginBottom: 24 }}>
@@ -790,11 +828,15 @@ export default function UsuariosPage() {
                     border: '1px solid #DDDDDD', borderRadius: 8,
                     background: '#FAFAFA', padding: 8,
                   }}>
-                    {territorios.length === 0 && (
-                      <span style={{ fontSize: 13, color: '#999', padding: 4 }}>Nenhum território cadastrado.</span>
+                    {territoriosDaCongregacaoSelecionada.length === 0 && (
+                      <span style={{ fontSize: 13, color: '#999', padding: 4 }}>
+                        {novaCongregacao.trim()
+                          ? 'Nenhum território cadastrado nessa congregação.'
+                          : 'Defina a congregação da pessoa para listar os territórios dela.'}
+                      </span>
                     )}
 
-                    {territorios.map((t) => {
+                    {territoriosDaCongregacaoSelecionada.map((t) => {
                       const marcado = designacoesSelecionadas.has(t.id)
                       return (
                         <label key={t.id} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '5px 6px', fontSize: 14, color: '#1A1A1A', cursor: 'pointer' }}>
@@ -806,7 +848,7 @@ export default function UsuariosPage() {
                   </div>
                 )}
                 <p style={{ fontSize: 12, color: '#999', marginTop: 6 }}>
-                  Os territórios que essa pessoa supervisiona e valida.
+                  Os territórios que essa pessoa supervisiona e valida — apenas da mesma congregação dela.
                 </p>
               </div>
             )}
@@ -837,12 +879,15 @@ export default function UsuariosPage() {
                   >
                     <option value="">— Nenhum grupo —</option>
                     {usuarios
-                      .filter((u) => u.perfil === 'superintendente_grupo' && u.ativo)
+                      .filter((u) =>
+                        u.perfil === 'superintendente_grupo' && u.ativo &&
+                        (u.congregacao ?? '').trim().toLowerCase() === novaCongregacao.trim().toLowerCase()
+                      )
                       .map((u) => <option key={u.id} value={u.id}>{u.nome}</option>)}
                   </select>
                 )}
                 <p style={{ fontSize: 12, color: '#999', marginTop: 6 }}>
-                  Ao entrar num grupo, a pessoa passa a ver e marcar todas as quadras dos territórios já designados a esse Sup. de Grupo.
+                  Ao entrar num grupo, a pessoa passa a ver e marcar todas as quadras dos territórios já designados a esse Sup. de Grupo — só aparecem Sup. de Grupo da mesma congregação dela.
                 </p>
               </div>
             )}
