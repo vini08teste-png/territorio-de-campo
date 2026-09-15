@@ -339,13 +339,33 @@ export default function Mapa() {
     territorioLayersRef.current.forEach((l) => m.removeLayer(l))
     territorioLayersRef.current = []
     for (const t of (terrsData ?? []) as Territorio[]) {
-      if (!t.geojson) continue
       const quadrasDoTerritorio = (quadrasData as Quadra[]).filter((q) => q.territorio_id === t.id)
       const progresso = progressoDoTerritorio(quadrasDoTerritorio)
-      const layer = L.geoJSON(t.geojson, {
-        pane: 'territorios',
-        style: { color: '#1F3A5F', weight: 3, fillColor: corDoProgresso(progresso), fillOpacity: 0.2 },
-      }).addTo(m)
+
+      // A maioria dos territórios ainda não tem um contorno próprio
+      // desenhado/importado — só as quadras individuais têm geojson.
+      // Nesse caso, desenha um contorno "estimado" a partir da área
+      // ocupada pelas quadras, só pra número/nome aparecerem no mapa.
+      let layer: any
+      if (t.geojson) {
+        layer = L.geoJSON(t.geojson, {
+          pane: 'territorios',
+          style: { color: '#1F3A5F', weight: 3, fillColor: corDoProgresso(progresso), fillOpacity: 0.2 },
+        }).addTo(m)
+      } else {
+        const bounds = new L.LatLngBounds([])
+        for (const q of quadrasDoTerritorio) {
+          if (!q.geojson) continue
+          try { bounds.extend(L.geoJSON(q.geojson).getBounds()) } catch { /* geometria inválida, ignora */ }
+        }
+        if (!bounds.isValid()) continue
+        layer = L.rectangle(bounds.pad(0.08), {
+          pane: 'territorios',
+          color: '#1F3A5F', weight: 2, dashArray: '6 4',
+          fillColor: corDoProgresso(progresso), fillOpacity: 0.08,
+        }).addTo(m)
+      }
+
       const nomeRotulo = escaparHtml((t.nome || '').toUpperCase())
       layer.bindTooltip(
         `<div class="rotulo-territorio-numero">${escaparHtml(String(t.numero))}</div>` +
