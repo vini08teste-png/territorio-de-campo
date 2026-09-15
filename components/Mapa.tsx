@@ -5,6 +5,7 @@ import { useEffect, useRef, useState, useCallback } from 'react'
 import { supabase, CORES_STATUS } from '@/lib/supabase'
 import ImportarOSM from '@/components/ImportarOSM'
 import { escaparHtml, linkComoChegar } from '@/lib/territorio'
+import { useValidacaoAutomaticaPorCongregacao } from '@/lib/congregacoes'
 
 
 // Setada pela tela de Territórios antes de mandar o usuário pro mapa, pra
@@ -33,6 +34,8 @@ interface Territorio {
   numero: string
   geojson: GeoJSONFeature | null
   link_maps: string | null
+  cor: string | null
+  congregacao: string | null
 }
 
 interface AtividadeRecente {
@@ -85,6 +88,18 @@ function corDoProgresso(progresso: number): string {
   if (progresso >= 50) return '#378ADD'
   if (progresso > 0) return '#F0C060'
   return '#9E9E9E'
+}
+
+/** Cor escolhida à mão pro território substitui a cor por progresso, em todo o desenho. */
+function estiloTerritorio(t: Territorio, progresso: number, pontilhado = false) {
+  const cor = t.cor || corDoProgresso(progresso)
+  return {
+    color: t.cor || '#1F3A5F',
+    weight: pontilhado ? 2 : 3,
+    ...(pontilhado ? { dashArray: '6 4' } : {}),
+    fillColor: cor,
+    fillOpacity: pontilhado ? (t.cor ? 0.18 : 0.08) : (t.cor ? 0.35 : 0.2),
+  }
 }
 
 function estiloDaQuadra(status: StatusQuadra) {
@@ -147,6 +162,7 @@ export default function Mapa() {
 
   const [usuario, setUsuario] = useState<Usuario | null>(null)
   const [territorios, setTerritorios] = useState<Territorio[]>([])
+  const { validacaoAutomaticaDe } = useValidacaoAutomaticaPorCongregacao()
   const [territoriosCarregados, setTerritoriosCarregados] = useState(false)
   const [territorioFiltro, setTerritorioFiltro] = useState('')
   const [quadraAtiva, setQuadraAtiva] = useState<Quadra | null>(null)
@@ -379,7 +395,7 @@ export default function Mapa() {
     if (usuarioData) setUsuario(usuarioData)
 
     const { data: terrsData } = await supabase.from('territorios')
-      .select('id, nome, numero, geojson, link_maps').order('numero')
+      .select('id, nome, numero, geojson, link_maps, cor, congregacao').order('numero')
     setTerritorios(terrsData ?? [])
     setTerritoriosCarregados(true)
 
@@ -406,7 +422,7 @@ export default function Mapa() {
       if (t.geojson) {
         layer = L.geoJSON(t.geojson, {
           pane: 'territorios',
-          style: { color: '#1F3A5F', weight: 3, fillColor: corDoProgresso(progresso), fillOpacity: 0.2 },
+          style: estiloTerritorio(t, progresso),
         }).addTo(m)
       } else {
         const bounds = new L.LatLngBounds([])
@@ -417,8 +433,7 @@ export default function Mapa() {
         if (!bounds.isValid()) continue
         layer = L.rectangle(bounds.pad(0.08), {
           pane: 'territorios',
-          color: '#1F3A5F', weight: 2, dashArray: '6 4',
-          fillColor: corDoProgresso(progresso), fillOpacity: 0.08,
+          ...estiloTerritorio(t, progresso, true),
         }).addTo(m)
       }
 
@@ -489,6 +504,16 @@ export default function Mapa() {
     mapInstanceRef.current = map
     setMapInstance(map)
 
+    // Com muitos territórios, o nome completo de cada um poluía o mapa
+    // inteiro (nome sobrepondo nome). Só mostra o nome quando já deu zoom o
+    // suficiente pra caber sem se sobrepor; de longe fica só o número.
+    const LIMITE_ZOOM_NOME = 16
+    const atualizarClasseZoom = () => {
+      map.getContainer().classList.toggle('mostrar-nome-territorio', map.getZoom() >= LIMITE_ZOOM_NOME)
+    }
+    atualizarClasseZoom()
+    map.on('zoomend', atualizarClasseZoom)
+
     // O mapa pode ser removido (StrictMode remonta em dev, ou o usuário navega
     // pra outra tela) antes dessas chamadas assíncronas responderem — sem essa
     // flag, o .then()/callback tardio mexe num mapa já destruído e o Leaflet
@@ -546,8 +571,11 @@ export default function Mapa() {
     const { error } = await supabase.from('quadras')
       .update({ status: novoStatus }).eq('id', quadraAtiva.id)
     if (!error) {
+      const territorioDaQuadra = territorios.find((t) => t.id === quadraAtiva.territorio_id)
+      const autoValidar = validacaoAutomaticaDe(territorioDaQuadra?.congregacao)
       await supabase.from('marcacoes').insert({
         quadra_id: quadraAtiva.id, usuario_id: usuario.id, status: novoStatus,
+        ...(autoValidar ? { validado_por: usuario.id } : {}),
       })
       setQuadraAtiva({ ...quadraAtiva, status: novoStatus })
       const layer = layersRef.current.find((l: any) => l._quadra?.id === quadraAtiva.id)
@@ -846,6 +874,7 @@ export default function Mapa() {
   }
 
   const coresAtivas = quadraAtiva ? (CORES_STATUS[quadraAtiva.status] ?? CORES_STATUS['nao_iniciado']) : null
+  const rotaQuadra = quadraAtiva ? linkComoChegar(quadraAtiva) : null
 
   return (
     <div style={{ position: 'relative', width: '100%', height: '100%' }}>
@@ -1226,6 +1255,17 @@ export default function Mapa() {
                     ))}
                   </select>
                 </div>
+
+                {rotaQuadra && (
+                  <a href={rotaQuadra} target="_blank" rel="noreferrer" style={{
+                    width: '100%', padding: '14px', border: '1.5px solid #EEE', borderRadius: 10,
+                    background: '#FFF', color: '#378ADD', fontSize: 15, fontWeight: 600,
+                    cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
+                    textDecoration: 'none', boxSizing: 'border-box', marginBottom: 12,
+                  }}>
+                    🧭 Como chegar nesta quadra
+                  </a>
+                )}
 
                 <div style={{ height: 1, background: '#EEE', margin: '16px 0' }} />
 

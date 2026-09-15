@@ -11,6 +11,7 @@ interface ConfigCong {
   superintendente_id: string
   prazo_territorio_dias: number
   bloquear_territorio_vencido: boolean
+  validacao_automatica: boolean
 }
 
 interface ST {
@@ -26,6 +27,7 @@ const DEFAULTS: ConfigCong = {
   superintendente_id: '',
   prazo_territorio_dias: 120,
   bloquear_territorio_vencido: false,
+  validacao_automatica: false,
 }
 
 function paraConfig(c: CongregacaoCompleta): ConfigCong {
@@ -36,6 +38,7 @@ function paraConfig(c: CongregacaoCompleta): ConfigCong {
     superintendente_id: c.superintendente_id ?? '',
     prazo_territorio_dias: c.prazo_territorio_dias ?? 120,
     bloquear_territorio_vencido: c.bloquear_territorio_vencido ?? false,
+    validacao_automatica: c.validacao_automatica ?? false,
   }
 }
 
@@ -104,6 +107,7 @@ export default function ConfiguracoesPage() {
       superintendente_id: config.superintendente_id || null,
       prazo_territorio_dias: config.prazo_territorio_dias,
       bloquear_territorio_vencido: config.bloquear_territorio_vencido,
+      validacao_automatica: config.validacao_automatica,
     }).eq('id', congregacaoId)
     setSalvando(false)
 
@@ -303,6 +307,32 @@ export default function ConfiguracoesPage() {
               <br />
               <span style={{ fontSize: 13, color: '#888' }}>
                 Desligado por padrão — o dirigente continua marcando normalmente, só aparece o aviso de vencido. Ligue aqui se quiser travar de verdade.
+              </span>
+            </span>
+          </label>
+        </div>
+
+        {/* Validação de marcações */}
+        <div style={{ background: '#FFFFFF', border: '0.5px solid #EEEEEE', borderRadius: 12, padding: '1.25rem', marginBottom: '1.5rem' }}>
+          <h2 style={{ fontSize: 15, fontWeight: 600, color: '#1A1A1A', marginTop: 0, marginBottom: 4 }}>
+            Validação de marcações
+          </h2>
+          <p style={{ fontSize: 13, color: '#888', marginBottom: '1rem' }}>
+            Por padrão, toda marcação de quadra feita por um dirigente fica pendente até um Sup. de Grupo aprovar em &ldquo;Validar marcações&rdquo;.
+          </p>
+
+          <label style={{ display: 'flex', alignItems: 'flex-start', gap: 10, cursor: 'pointer' }}>
+            <input
+              type="checkbox"
+              checked={config.validacao_automatica}
+              onChange={(e) => setConfig((c) => ({ ...c, validacao_automatica: e.target.checked }))}
+              style={{ marginTop: 3 }}
+            />
+            <span>
+              <span style={{ fontSize: 14, fontWeight: 500, color: '#1A1A1A' }}>Permitir tudo (aprovar automaticamente)</span>
+              <br />
+              <span style={{ fontSize: 13, color: '#888' }}>
+                Desligado por padrão. Ligue pra dispensar a validação manual nessa congregação — toda marcação já entra aprovada na hora.
               </span>
             </span>
           </label>

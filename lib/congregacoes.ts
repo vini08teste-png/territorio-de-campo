@@ -43,6 +43,7 @@ export interface CongregacaoCompleta {
   superintendente_id: string | null
   prazo_territorio_dias: number | null
   bloquear_territorio_vencido: boolean
+  validacao_automatica: boolean
 }
 
 // Traz as linhas completas da tabela congregacoes (com id de verdade —
@@ -82,4 +83,19 @@ export function useMapaPrazoPorCongregacao(prazoPadrao = 120) {
     return mapa.get(chave) ?? prazoPadrao
   }
   return { prazoDe, carregando }
+}
+
+// Mapa nome-da-congregação → se marcação de quadra já entra aprovada
+// (sem passar pela fila de "Validar marcações").
+export function useValidacaoAutomaticaPorCongregacao() {
+  const { congregacoes, carregando } = useCongregacoesCompletas()
+  const mapa = new Map<string, boolean>()
+  for (const c of congregacoes) {
+    mapa.set(c.nome.trim().toLowerCase(), c.validacao_automatica)
+  }
+  function validacaoAutomaticaDe(nomeCongregacao: string | null | undefined) {
+    const chave = (nomeCongregacao ?? '').trim().toLowerCase()
+    return mapa.get(chave) ?? false
+  }
+  return { validacaoAutomaticaDe, carregando }
 }
