@@ -6,11 +6,15 @@ import { supabase, CORES_STATUS } from '@/lib/supabase'
 import ImportarOSM from '@/components/ImportarOSM'
 import { escaparHtml, linkComoChegar } from '@/lib/territorio'
 import { useValidacaoAutomaticaPorCongregacao } from '@/lib/congregacoes'
+import { marcarQuadra, salvarPontoParada } from '@/lib/offline/acoesCampo'
 
 
 // Setada pela tela de Territórios antes de mandar o usuário pro mapa, pra
 // já abrir direto no modo de desenho de contorno daquele território.
 const CHAVE_DESENHAR_TERRITORIO = 'territorio_de_campo:desenhar_territorio_id'
+// Mesma ideia, mas pra editar (arrastar) o contorno que já existe, em vez de
+// desenhar um novo do zero.
+const CHAVE_EDITAR_TERRITORIO = 'territorio_de_campo:editar_territorio_id'
 
 type StatusQuadra = 'nao_iniciado' | 'em_andamento' | 'parcial' | 'concluido' | 'pendente'
 
@@ -153,12 +157,15 @@ export default function Mapa() {
   const territorioLayersRef = useRef<any[]>([])
   const pontoLayersRef = useRef<any[]>([])
   const pendingGeoJsonRef = useRef<any>(null)
+  // Foto do ponto tirada offline: guarda o arquivo pra subir na sincronização.
+  const pontoFotoBlobRef = useRef<Blob | null>(null)
   const apagarPontoRef = useRef<(id: string) => Promise<void>>(async () => {})
   const editarPontoRef = useRef<(p: PontoParada) => void>(() => {})
   const modoSelecaoRef = useRef(false)
   const selecionadasRef = useRef<Set<string>>(new Set())
   const drawSelecaoRef = useRef<any>(null)
   const drawContornoRef = useRef<any>(null)
+  const edicaoGeometriaRef = useRef<{ camada: any; sub: any; desabilitarArraste: () => void } | null>(null)
 
   const [usuario, setUsuario] = useState<Usuario | null>(null)
   const [territorios, setTerritorios] = useState<Territorio[]>([])
@@ -171,6 +178,7 @@ export default function Mapa() {
   const [atividadesRecentesFechado, setAtividadesRecentesFechado] = useState(false)
   const [modoDesenho, setModoDesenho] = useState(false)
   const [desenhandoContornoDe, setDesenhandoContornoDe] = useState<Territorio | null>(null)
+  const [editandoGeometria, setEditandoGeometria] = useState<{ tipo: 'quadra' | 'territorio'; id: string; nome: string } | null>(null)
   const [salvando, setSalvando] = useState(false)
   const [feedback, setFeedback] = useState<string | null>(null)
   const [painelOSM, setPainelOSM] = useState(false)
@@ -568,21 +576,19 @@ export default function Mapa() {
   async function atualizarStatusQuadra(novoStatus: StatusQuadra) {
     if (!quadraAtiva || !usuario) return
     setSalvando(true)
-    const { error } = await supabase.from('quadras')
-      .update({ status: novoStatus }).eq('id', quadraAtiva.id)
-    if (!error) {
-      const territorioDaQuadra = territorios.find((t) => t.id === quadraAtiva.territorio_id)
-      const autoValidar = validacaoAutomaticaDe(territorioDaQuadra?.congregacao)
-      await supabase.from('marcacoes').insert({
-        quadra_id: quadraAtiva.id, usuario_id: usuario.id, status: novoStatus,
-        ...(autoValidar ? { validado_por: usuario.id } : {}),
-      })
-      setQuadraAtiva({ ...quadraAtiva, status: novoStatus })
-      const layer = layersRef.current.find((l: any) => l._quadra?.id === quadraAtiva.id)
-      if (layer) { layer._quadra = { ...layer._quadra, status: novoStatus }; layer.setStyle(estiloDaQuadra(novoStatus)) }
-      mostrarFeedback('Quadra atualizada!')
-    }
+    const territorioDaQuadra = territorios.find((t) => t.id === quadraAtiva.territorio_id)
+    const validadoPor = validacaoAutomaticaDe(territorioDaQuadra?.congregacao) ? usuario.id : null
+    // Grava agora se tem sinal; sem sinal, entra na fila offline (acoesCampo).
+    const resultado = await marcarQuadra({
+      quadraId: quadraAtiva.id, usuarioId: usuario.id, status: novoStatus, validadoPor,
+    })
     setSalvando(false)
+    if (resultado.modo === 'erro') { mostrarFeedback('Erro ao salvar. Tente de novo.'); return }
+    // Otimista: reflete na tela mesmo offline (a gravação está garantida na fila).
+    setQuadraAtiva({ ...quadraAtiva, status: novoStatus })
+    const layer = layersRef.current.find((l: any) => l._quadra?.id === quadraAtiva.id)
+    if (layer) { layer._quadra = { ...layer._quadra, status: novoStatus }; layer.setStyle(estiloDaQuadra(novoStatus)) }
+    mostrarFeedback(resultado.modo === 'offline' ? 'Salvo offline — sincroniza quando voltar o sinal' : 'Quadra atualizada!')
   }
 
   // ── Centralizar na localização atual ────────────────────────────────────────
@@ -614,6 +620,7 @@ export default function Mapa() {
         setPontoIdioma('')
         setPontoQtdPessoas('')
         setPontoFoto(null)
+        pontoFotoBlobRef.current = null
         setEditandoPonto(null)
         setModalPonto(true)
       },
@@ -626,6 +633,12 @@ export default function Mapa() {
     e.target.value = ''
     if (!arquivo || !usuario) return
 
+    // Sem sinal: guarda o arquivo pra subir na sincronização e mostra prévia local.
+    if (typeof navigator !== 'undefined' && !navigator.onLine) {
+      pontoFotoBlobRef.current = arquivo
+      setPontoFoto(URL.createObjectURL(arquivo))
+      return
+    }
     setEnviandoFotoPonto(true)
     const extensao = arquivo.name.split('.').pop() || 'jpg'
     const caminho = `pontos/${usuario.id}-${Date.now()}.${extensao}`
@@ -633,7 +646,13 @@ export default function Mapa() {
       cacheControl: '3600', upsert: false,
     })
     setEnviandoFotoPonto(false)
-    if (erroUpload) { mostrarFeedback('Erro ao enviar a foto.'); return }
+    if (erroUpload) {
+      // Falhou o upload (talvez rede caiu): guarda pra subir depois, com prévia local.
+      pontoFotoBlobRef.current = arquivo
+      setPontoFoto(URL.createObjectURL(arquivo))
+      return
+    }
+    pontoFotoBlobRef.current = null
     const { data: publica } = supabase.storage.from('territorios').getPublicUrl(caminho)
     setPontoFoto(publica.publicUrl)
   }
@@ -645,22 +664,28 @@ export default function Mapa() {
       return
     }
     setSalvandoPonto(true)
-    const { error } = await supabase.from('pontos_parada').insert({
-      quadra_id: quadraAtiva.id,
-      usuario_id: usuario.id, lat: pontoCoords.lat, lng: pontoCoords.lng,
+    const fotoBlob = pontoFotoBlobRef.current
+    // Grava agora se tem sinal; sem sinal entra na fila (a foto sobe na sync).
+    const resultado = await salvarPontoParada({
+      quadraId: quadraAtiva.id,
+      usuarioId: usuario.id, lat: pontoCoords.lat, lng: pontoCoords.lng,
       observacao: pontoObs.trim(),
       idioma: pontoIdioma.trim() || null,
-      qtd_pessoas: pontoIdioma.trim() ? parseInt(pontoQtdPessoas, 10) : null,
-      foto: pontoFoto,
-    })
+      qtdPessoas: pontoIdioma.trim() ? parseInt(pontoQtdPessoas, 10) : null,
+      fotoUrl: fotoBlob ? null : pontoFoto,
+    }, fotoBlob)
     setSalvandoPonto(false)
-    if (!error) {
-      setModalPonto(false)
-      mostrarFeedback('📍 Ponto de parada salvo!')
-      const { data } = await supabase.from('pontos_parada').select('*, usuario:usuario_id(nome)').order('criado_em', { ascending: false })
-      setTodosPontos(data ?? [])
-      renderizarPontos(mapInstanceRef.current, data ?? [])
+    if (resultado.modo === 'erro') { mostrarFeedback('Erro ao salvar o ponto.'); return }
+    pontoFotoBlobRef.current = null
+    setModalPonto(false)
+    if (resultado.modo === 'offline') {
+      mostrarFeedback('📍 Ponto salvo offline — sincroniza quando voltar o sinal')
+      return
     }
+    mostrarFeedback('📍 Ponto de parada salvo!')
+    const { data } = await supabase.from('pontos_parada').select('*, usuario:usuario_id(nome)').order('criado_em', { ascending: false })
+    setTodosPontos(data ?? [])
+    renderizarPontos(mapInstanceRef.current, data ?? [])
   }
 
   async function salvarObservacaoPonto() {
@@ -707,6 +732,7 @@ export default function Mapa() {
     setEditandoPonto(p); setPontoObs(p.observacao ?? ''); setPontoIdioma(p.idioma ?? '')
     setPontoQtdPessoas(p.qtd_pessoas != null ? String(p.qtd_pessoas) : '')
     setPontoFoto(p.foto ?? null)
+    pontoFotoBlobRef.current = null
     setModalPonto(true)
   }
 
@@ -770,15 +796,160 @@ export default function Mapa() {
     setDesenhandoContornoDe(null)
   }
 
-  // Se a tela de Territórios pediu pra desenhar um contorno específico,
-  // ativa o modo assim que os territórios (e o mapa) estiverem prontos.
+  // ── Mover/editar o desenho de uma quadra ou território que já existe ───────
+  // Diferente do "desenhar contorno" (que descarta e recomeça do zero), aqui
+  // o formato atual é mantido: dá pra arrastar o desenho inteiro (achou a
+  // posição certa, só tava deslocado) ou puxar cada vértice (o leaflet-draw
+  // já cuida disso sozinho via `sub.editing`).
+  function pontoDoEvento(e: any) {
+    if (e.touches && e.touches.length > 0) return e.touches[0]
+    if (e.changedTouches && e.changedTouches.length > 0) return e.changedTouches[0]
+    return e
+  }
+
+  function habilitarArrasteDoCorpo(sub: any, m: any, L: any) {
+    let arrastando = false
+    let ultimoLatLng: any = null
+    const container = m.getContainer()
+
+    function latLngDoEvento(e: any) {
+      return m.mouseEventToLatLng(pontoDoEvento(e))
+    }
+
+    function aoMover(e: any) {
+      if (!arrastando) return
+      if (e.cancelable) e.preventDefault()
+      const atual = latLngDoEvento(e)
+      const dLat = atual.lat - ultimoLatLng.lat
+      const dLng = atual.lng - ultimoLatLng.lng
+      ultimoLatLng = atual
+      const deslocar = (latlngs: any): any =>
+        Array.isArray(latlngs) ? latlngs.map(deslocar) : L.latLng(latlngs.lat + dLat, latlngs.lng + dLng)
+      sub.setLatLngs(deslocar(sub.getLatLngs()))
+    }
+
+    function aoSoltar() {
+      if (!arrastando) return
+      arrastando = false
+      m.dragging.enable()
+      container.removeEventListener('mousemove', aoMover)
+      container.removeEventListener('touchmove', aoMover)
+      window.removeEventListener('mouseup', aoSoltar)
+      window.removeEventListener('touchend', aoSoltar)
+      // Os pontinhos de vértice do leaflet-draw ficam na posição antiga depois
+      // de mover o corpo todo por código — desliga e religa pra reposicionar.
+      try { sub.editing.disable(); sub.editing.enable() } catch { /* segue sem os pontinhos */ }
+    }
+
+    function aoIniciar(e: any) {
+      L.DomEvent.stopPropagation(e)
+      arrastando = true
+      // "e" aqui é o evento do Leaflet (layer.on), já vem com `.latlng` pronto
+      // — não é um MouseEvent nativo, então mouseEventToLatLng daria NaN nele.
+      ultimoLatLng = e.latlng ?? latLngDoEvento(e.originalEvent ?? e)
+      m.dragging.disable()
+      container.addEventListener('mousemove', aoMover)
+      container.addEventListener('touchmove', aoMover, { passive: false })
+      window.addEventListener('mouseup', aoSoltar)
+      window.addEventListener('touchend', aoSoltar)
+    }
+
+    sub.on('mousedown', aoIniciar)
+    sub.on('touchstart', aoIniciar)
+
+    return () => {
+      sub.off('mousedown', aoIniciar)
+      sub.off('touchstart', aoIniciar)
+      container.removeEventListener('mousemove', aoMover)
+      container.removeEventListener('touchmove', aoMover)
+      window.removeEventListener('mouseup', aoSoltar)
+      window.removeEventListener('touchend', aoSoltar)
+    }
+  }
+
+  function encerrarEdicaoGeometria() {
+    const estado = edicaoGeometriaRef.current
+    const m = mapInstanceRef.current
+    if (estado) {
+      try { estado.sub.editing.disable() } catch { /* já pode ter sido desligado */ }
+      try { estado.desabilitarArraste() } catch { /* idem */ }
+      try { m?.removeLayer(estado.camada) } catch { /* idem */ }
+    }
+    edicaoGeometriaRef.current = null
+    setEditandoGeometria(null)
+  }
+
+  function ativarEdicaoGeometria(tipo: 'quadra' | 'territorio', id: string, nome: string, geojson: unknown) {
+    const m = mapInstanceRef.current
+    const L = (window as any).L
+    if (!m || !L || !geojson) { mostrarFeedback('Esse item ainda não tem um desenho pra editar.'); return }
+
+    encerrarEdicaoGeometria()
+    setPainelAberto(false)
+    setQuadraAtiva(null)
+    setMenuAcoesAberto(false)
+
+    // Some com o desenho "estático" enquanto edita, pra não ficar um por
+    // cima do outro — o normal volta sozinho ao salvar ou cancelar.
+    const camadaExistente = tipo === 'quadra'
+      ? layersRef.current.find((l: any) => l._quadra?.id === id)
+      : territorioLayersRef.current.find((l: any) => l._territorioId === id)
+    if (camadaExistente) { try { m.removeLayer(camadaExistente) } catch { /* nada a fazer */ } }
+
+    const camada = L.geoJSON(geojson as any, {
+      style: { color: '#FF7A1A', weight: 3, fillColor: '#FFB877', fillOpacity: 0.35, dashArray: '6 4' },
+    }).addTo(m)
+    const sub = camada.getLayers?.()[0]
+    if (!sub || !sub.editing) {
+      m.removeLayer(camada)
+      mostrarFeedback('Esse formato não pode ser editado.')
+      void carregarQuadras()
+      return
+    }
+    sub.editing.enable()
+    const desabilitarArraste = habilitarArrasteDoCorpo(sub, m, L)
+    try { m.fitBounds(sub.getBounds(), { maxZoom: 18, padding: [40, 40] }) } catch { /* geometria vazia */ }
+
+    edicaoGeometriaRef.current = { camada, sub, desabilitarArraste }
+    setEditandoGeometria({ tipo, id, nome })
+  }
+
+  async function salvarEdicaoGeometria() {
+    const estado = edicaoGeometriaRef.current
+    if (!estado || !editandoGeometria) return
+    setSalvando(true)
+    const geojson = estado.sub.toGeoJSON()
+    const tabela = editandoGeometria.tipo === 'quadra' ? 'quadras' : 'territorios'
+    const { error } = await supabase.from(tabela).update({ geojson }).eq('id', editandoGeometria.id)
+    setSalvando(false)
+    encerrarEdicaoGeometria()
+    if (error) { mostrarFeedback('Erro ao salvar.'); return }
+    mostrarFeedback('Posição salva!')
+    void carregarQuadras()
+  }
+
+  function cancelarEdicaoGeometria() {
+    encerrarEdicaoGeometria()
+    void carregarQuadras() // nada foi salvo — reaparece do jeito que tava
+  }
+
+  // Se a tela de Territórios pediu pra desenhar (ou editar) um contorno
+  // específico, ativa o modo assim que os territórios (e o mapa) estiverem prontos.
   useEffect(() => {
     if (!territoriosCarregados || territorios.length === 0) return
-    const id = localStorage.getItem(CHAVE_DESENHAR_TERRITORIO)
-    if (!id) return
-    localStorage.removeItem(CHAVE_DESENHAR_TERRITORIO)
-    const t = territorios.find((x) => x.id === id)
-    if (t) iniciarDesenhoContornoTerritorio(t)
+    const idDesenhar = localStorage.getItem(CHAVE_DESENHAR_TERRITORIO)
+    if (idDesenhar) {
+      localStorage.removeItem(CHAVE_DESENHAR_TERRITORIO)
+      const t = territorios.find((x) => x.id === idDesenhar)
+      if (t) iniciarDesenhoContornoTerritorio(t)
+      return
+    }
+    const idEditar = localStorage.getItem(CHAVE_EDITAR_TERRITORIO)
+    if (idEditar) {
+      localStorage.removeItem(CHAVE_EDITAR_TERRITORIO)
+      const t = territorios.find((x) => x.id === idEditar)
+      if (t?.geojson) ativarEdicaoGeometria('territorio', t.id, t.nome, t.geojson)
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [territoriosCarregados, territorios])
 
@@ -901,8 +1072,37 @@ export default function Mapa() {
         </div>
       )}
 
+      {/* Movendo/ajustando o formato de uma quadra ou território existente */}
+      {editandoGeometria && (
+        <div style={{
+          position: 'absolute', top: 10, left: '50%', transform: 'translateX(-50%)', zIndex: 1000,
+          display: 'flex', alignItems: 'center', gap: 10,
+          background: '#B5590A', color: '#fff', borderRadius: 8,
+          boxShadow: '0 1px 4px rgba(0,0,0,0.25)', padding: '8px 8px 8px 14px',
+          maxWidth: '90%', fontSize: 13,
+        }}>
+          <span>
+            ↔️ Movendo <strong>{editandoGeometria.nome}</strong>: arraste o desenho inteiro ou puxe os pontinhos das bordas pra ajustar o formato.
+          </span>
+          <button
+            onClick={cancelarEdicaoGeometria}
+            disabled={salvando}
+            style={{ background: 'rgba(255,255,255,0.15)', border: 'none', borderRadius: 6, color: '#fff', cursor: salvando ? 'not-allowed' : 'pointer', padding: '4px 10px', flexShrink: 0, fontSize: 12 }}
+          >
+            Cancelar
+          </button>
+          <button
+            onClick={() => void salvarEdicaoGeometria()}
+            disabled={salvando}
+            style={{ background: '#fff', border: 'none', borderRadius: 6, color: '#B5590A', fontWeight: 700, cursor: salvando ? 'not-allowed' : 'pointer', padding: '4px 10px', flexShrink: 0, fontSize: 12 }}
+          >
+            {salvando ? 'Salvando…' : 'Salvar'}
+          </button>
+        </div>
+      )}
+
       {/* Onde parou — atividade recente da congregação */}
-      {!modoDesenho && !modalCriar && !modalPonto && !painelOSM && !modoSelecao && !painelAberto && !desenhandoContornoDe && atividadesRecentes.length > 0 && !atividadesRecentesFechado && (
+      {!modoDesenho && !modalCriar && !modalPonto && !painelOSM && !modoSelecao && !painelAberto && !desenhandoContornoDe && !editandoGeometria && atividadesRecentes.length > 0 && !atividadesRecentesFechado && (
         <div style={{
           position: 'absolute', top: 10, right: 10, zIndex: 900,
           background: '#fff', border: '1px solid #DDD', borderRadius: 8,
@@ -942,7 +1142,7 @@ export default function Mapa() {
       )}
 
       {/* Filtro: ver só um território */}
-      {!modoDesenho && !modalCriar && !modalPonto && !painelOSM && !modoSelecao && !desenhandoContornoDe && territoriosCarregados && territorios.length > 0 && (
+      {!modoDesenho && !modalCriar && !modalPonto && !painelOSM && !modoSelecao && !desenhandoContornoDe && !editandoGeometria && territoriosCarregados && territorios.length > 0 && (
         <select
           value={territorioFiltro}
           onChange={(e) => setTerritorioFiltro(e.target.value)}
@@ -975,7 +1175,7 @@ export default function Mapa() {
       )}
 
       {/* Centralizar na localização atual */}
-      {!modoDesenho && !modalCriar && !modalPonto && !painelOSM && !modoSelecao && (
+      {!modoDesenho && !modalCriar && !modalPonto && !painelOSM && !modoSelecao && !editandoGeometria && (
         <button
           onClick={centralizarLocalizacaoAtual}
           disabled={localizando}
@@ -996,7 +1196,7 @@ export default function Mapa() {
 
       {/* Botão de ações ST: um único FAB que abre um menu curto, em vez de
           três botões largos empilhados brigando com o resto da tela */}
-      {podeGerenciarQuadras && !painelAberto && !modoDesenho && !modalCriar && !painelOSM && !modoSelecao && (
+      {podeGerenciarQuadras && !painelAberto && !modoDesenho && !modalCriar && !painelOSM && !modoSelecao && !editandoGeometria && (
         <div style={{ position: 'absolute', bottom: 96, left: 16, zIndex: 900, display: 'flex', flexDirection: 'column', alignItems: 'flex-start', gap: 10 }}>
           {menuAcoesAberto && (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
@@ -1336,10 +1536,21 @@ export default function Mapa() {
               </>
             )}
 
-            {/* Excluir quadra — só ST */}
+            {/* Mover/ajustar formato e excluir quadra — só ST */}
             {podeGerenciarQuadras && (
               <>
                 <div style={{ height: 1, background: '#EEE', margin: '12px 0' }} />
+                <button onClick={() => {
+                  if (!quadraAtiva) return
+                  ativarEdicaoGeometria('quadra', quadraAtiva.id, quadraAtiva.nome, quadraAtiva.geojson)
+                }} style={{
+                  width: '100%', padding: '13px', border: '1.5px solid #FFD9A8', borderRadius: 10,
+                  background: '#FFF6EA', color: '#B5590A', fontSize: 14, fontWeight: 600,
+                  cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
+                  marginBottom: 10,
+                }}>
+                  ↔️ Mover / ajustar formato
+                </button>
                 <button onClick={() => {
                   if (!quadraAtiva) return
                   if (!confirm(`Excluir a quadra "${quadraAtiva.nome}"?`)) return

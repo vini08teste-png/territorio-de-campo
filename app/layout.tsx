@@ -3,6 +3,7 @@ import Script from 'next/script'
 import './globals.css'
 import RegistrarSW from '@/components/RegistrarSW'
 import StatusConexao from '@/components/StatusConexao'
+import SincronizadorOffline from '@/components/SincronizadorOffline'
 
 export const metadata: Metadata = {
   title: 'Território de Campo',
@@ -36,6 +37,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
       <body suppressHydrationWarning>
         <StatusConexao />
         {children}
+        <SincronizadorOffline />
         <RegistrarSW />
         <Script src="/vendor/leaflet/leaflet.js" strategy="beforeInteractive" />
         <Script src="/vendor/leaflet-draw/leaflet.draw.js" strategy="beforeInteractive" />
