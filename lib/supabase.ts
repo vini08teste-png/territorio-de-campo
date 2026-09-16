@@ -27,6 +27,7 @@ export type Territorio = {
   link_maps: string | null
   congregacao: string | null
   foto_marco: string | null
+  cor: string | null
   criado_por: string
   criado_em: string
 }
