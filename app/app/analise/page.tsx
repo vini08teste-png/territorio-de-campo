@@ -1,7 +1,7 @@
 'use client'
 
 import { useEffect, useState, useCallback } from 'react'
-import { supabase } from '@/lib/supabase'
+import { supabase, buscarTodos } from '@/lib/supabase'
 import { usePaginaRestrita } from '@/lib/permissoes'
 import { Carregando, SemPermissao } from '@/components/EstadoPagina'
 import { calcularPrazoTerritorio } from '@/lib/prazoTerritorio'
@@ -64,7 +64,7 @@ export default function AnalisePage() {
   const carregar = useCallback(async () => {
     const [{ data: territorios }, { data: quadras }, { data: designacoesSG }, { data: congregacoes }] = await Promise.all([
       supabase.from('territorios').select('*').order('numero'),
-      supabase.from('quadras').select('*'),
+      buscarTodos('quadras').then((data) => ({ data })),
       supabase.from('designacoes').select('territorio_id, data_inicio').is('quadra_id', null).is('data_fim', null),
       supabase.from('congregacoes').select('nome, prazo_territorio_dias'),
     ])

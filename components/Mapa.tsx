@@ -200,6 +200,8 @@ export default function Mapa() {
 
   // Seleção por área: agrupar quadras sem território de uma vez num território
   const [modoSelecao, setModoSelecao] = useState(false)
+  const [movendoGrupo, setMovendoGrupo] = useState(false)
+  const arrasteGrupoRef = useRef<{ alvos: { id: string; layer: any }[]; limpar: () => void } | null>(null)
   const [selecionadas, setSelecionadas] = useState<Set<string>>(new Set())
   const [territorioParaAtribuir, setTerritorioParaAtribuir] = useState('')
   const [atribuindo, setAtribuindo] = useState(false)
@@ -385,7 +387,6 @@ export default function Mapa() {
   // Clique em quadra durante o modo seleção alterna ela dentro/fora do grupo,
   // em vez de abrir o painel de detalhe. Só quadra sem território entra.
   const alternarSelecaoQuadra = useCallback((q: Quadra, layer: any) => {
-    if (q.territorio_id) return
     setSelecionadas((anterior) => {
       const proxima = new Set(anterior)
       if (proxima.has(q.id)) { proxima.delete(q.id); layer.setStyle(estiloDaQuadra(q.status)) }
@@ -825,7 +826,7 @@ export default function Mapa() {
   /** `aoDeslocar`, quando passado, é chamado a cada passo do arraste do corpo
       (não do vértice) com o delta em graus — usado pra levar junto as quadras
       de um território sendo movido, já que são registros/desenhos separados. */
-  function habilitarArrasteDoCorpo(sub: any, m: any, L: any, aoDeslocar?: (dLat: number, dLng: number) => void) {
+  function habilitarArrasteDoCorpo(sub: any, m: any, L: any, aoDeslocar?: (dLat: number, dLng: number) => void, comVertices = true) {
     let arrastando = false
     let ultimoLatLng: any = null
     const container = m.getContainer()
@@ -860,6 +861,7 @@ export default function Mapa() {
       // referência velha); tem que recriar o handler do zero pra ele reler a
       // posição atual. Sem isso, arrastar um pontinho "fantasma" depois jogava
       // a quadra de volta pra posição antiga (é o bug do "some a quadra").
+      if (!comVertices) return
       try {
         sub.editing.disable()
         sub.editing = new L.Edit.Poly(sub)
@@ -1046,7 +1048,7 @@ export default function Mapa() {
       const proxima = new Set(selecionadasRef.current)
       layersRef.current.forEach((layer: any) => {
         const q = layer._quadra as Quadra | undefined
-        if (!q || q.territorio_id) return
+        if (!q) return
         if (bounds.intersects(layer.getBounds())) {
           proxima.add(q.id)
           layer.setStyle(ESTILO_SELECIONADA)
@@ -1066,6 +1068,9 @@ export default function Mapa() {
   }
 
   function sairDoModoSelecao() {
+    arrasteGrupoRef.current?.limpar()
+    arrasteGrupoRef.current = null
+    setMovendoGrupo(false)
     drawSelecaoRef.current?.disable()
     drawSelecaoRef.current = null
     layersRef.current.forEach((layer: any) => {
@@ -1076,6 +1081,57 @@ export default function Mapa() {
     setSelecionadas(new Set())
     setTerritorioParaAtribuir('')
     setModoSelecao(false)
+  }
+
+  // ── Mover em bloco as quadras selecionadas ────────────────────────────────
+  // Arrasta o grupo inteiro como uma peça só: pega em qualquer uma das
+  // selecionadas e todas andam junto, mantendo a distância entre elas.
+  function ativarMoverGrupo() {
+    const m = mapInstanceRef.current
+    const L = (window as any).L
+    if (!m || !L || selecionadas.size === 0) return
+    drawSelecaoRef.current?.disable()
+    drawSelecaoRef.current = null
+
+    const alvos = layersRef.current
+      .filter((l: any) => l._quadra && selecionadas.has(l._quadra.id))
+      .map((l: any) => ({ id: l._quadra.id as string, layer: l.getLayers?.()[0] }))
+      .filter((a: any) => !!a.layer)
+    if (alvos.length === 0) return
+
+    const limpezas = alvos.map((a: any) =>
+      habilitarArrasteDoCorpo(a.layer, m, L, (dLat, dLng) => {
+        for (const outro of alvos) {
+          if (outro === a) continue
+          outro.layer.setLatLngs(deslocarLatLngs(outro.layer.getLatLngs(), dLat, dLng, L))
+        }
+      }, false)
+    )
+
+    arrasteGrupoRef.current = { alvos, limpar: () => limpezas.forEach((f: any) => f()) }
+    setMovendoGrupo(true)
+  }
+
+  function pararMoverGrupo() {
+    arrasteGrupoRef.current?.limpar()
+    arrasteGrupoRef.current = null
+    setMovendoGrupo(false)
+  }
+
+  async function salvarPosicoesGrupo() {
+    const estado = arrasteGrupoRef.current
+    if (!estado) return
+    setAtribuindo(true)
+    let falhou = 0
+    for (const a of estado.alvos) {
+      const { error } = await supabase.from('quadras').update({ geojson: a.layer.toGeoJSON() }).eq('id', a.id)
+      if (error) falhou++
+    }
+    setAtribuindo(false)
+    pararMoverGrupo()
+    mostrarFeedback(falhou > 0 ? `${falhou} quadra(s) não puderam ser salvas.` : 'Posições salvas!')
+    sairDoModoSelecao()
+    await carregarQuadras()
   }
 
   async function atribuirSelecionadas() {
@@ -1299,18 +1355,49 @@ export default function Mapa() {
           display: 'flex', flexDirection: 'column', gap: 10, maxWidth: 420, margin: '0 auto',
         }}>
           <div style={{ fontSize: 13, color: '#444', lineHeight: 1.5 }}>
-            🔲 Arraste um retângulo no mapa pra selecionar quadras <strong>sem território</strong>. Pode arrastar várias vezes pra juntar mais de uma área. Clicar numa quadra também alterna ela na seleção.
+            {movendoGrupo
+              ? '↔️ Agora arraste qualquer uma das quadras marcadas — todas andam junto, mantendo a distância entre elas. Depois é só salvar.'
+              : <>🔲 Arraste um retângulo no mapa pra selecionar quadras. Pode arrastar várias vezes pra juntar mais de uma área. Clicar numa quadra também alterna ela na seleção.</>}
           </div>
           <div style={{ fontSize: 13, fontWeight: 600, color: '#6B3FD4' }}>
             {selecionadas.size} quadra{selecionadas.size !== 1 ? 's' : ''} selecionada{selecionadas.size !== 1 ? 's' : ''}
           </div>
-          <select value={territorioParaAtribuir} onChange={(e) => setTerritorioParaAtribuir(e.target.value)}
+
+          {souAdminMapa && (movendoGrupo ? (
+            <div style={{ display: 'flex', gap: 8 }}>
+              <button onClick={() => { pararMoverGrupo(); void carregarQuadras() }} disabled={atribuindo} style={{
+                flex: 1, padding: '12px', fontSize: 14, fontWeight: 500,
+                background: '#F7F7F7', color: '#555', border: '0.5px solid #DDD', borderRadius: 10, cursor: 'pointer',
+              }}>
+                Descartar
+              </button>
+              <button onClick={() => void salvarPosicoesGrupo()} disabled={atribuindo} style={{
+                flex: 2, padding: '12px', fontSize: 14, fontWeight: 600,
+                background: atribuindo ? '#CCCCCC' : '#B5590A', color: '#fff', border: 'none', borderRadius: 10,
+                cursor: atribuindo ? 'not-allowed' : 'pointer',
+              }}>
+                {atribuindo ? 'Salvando…' : `💾 Salvar posição de ${selecionadas.size}`}
+              </button>
+            </div>
+          ) : (
+            <button onClick={ativarMoverGrupo} disabled={selecionadas.size === 0} style={{
+              width: '100%', padding: '12px', fontSize: 14, fontWeight: 600,
+              background: selecionadas.size === 0 ? '#F2F2F2' : '#FFF6EA',
+              color: selecionadas.size === 0 ? '#AAA' : '#B5590A',
+              border: `1px solid ${selecionadas.size === 0 ? '#E5E5E5' : '#FFD9A8'}`, borderRadius: 10,
+              cursor: selecionadas.size === 0 ? 'not-allowed' : 'pointer',
+            }}>
+              ↔️ Mover as {selecionadas.size || ''} selecionadas de posição
+            </button>
+          ))}
+
+          {!movendoGrupo && <select value={territorioParaAtribuir} onChange={(e) => setTerritorioParaAtribuir(e.target.value)}
             disabled={selecionadas.size === 0}
             style={{ width: '100%', padding: '11px 14px', fontSize: 14, border: '1px solid #DDD', borderRadius: 8, background: '#FAFAFA', outline: 'none' }}>
             <option value="">— Atribuir ao território —</option>
             {territorios.map((t) => <option key={t.id} value={t.id}>#{t.numero} — {t.nome}</option>)}
-          </select>
-          <div style={{ display: 'flex', gap: 8 }}>
+          </select>}
+          {!movendoGrupo && <div style={{ display: 'flex', gap: 8 }}>
             <button onClick={sairDoModoSelecao} style={{
               flex: 1, padding: '12px', fontSize: 14, fontWeight: 500,
               background: '#F7F7F7', color: '#555', border: '0.5px solid #DDD', borderRadius: 10, cursor: 'pointer',
@@ -1325,7 +1412,7 @@ export default function Mapa() {
             }}>
               {atribuindo ? 'Atribuindo…' : `✅ Atribuir ${selecionadas.size || ''}`}
             </button>
-          </div>
+          </div>}
         </div>
       )}
 

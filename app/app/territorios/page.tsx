@@ -3,7 +3,7 @@
 import { useEffect, useState } from 'react'
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
-import { supabase, CORES_STATUS, type Territorio, type Quadra } from '@/lib/supabase'
+import { supabase, buscarTodos, CORES_STATUS, type Territorio, type Quadra } from '@/lib/supabase'
 import { usePaginaRestrita } from '@/lib/permissoes'
 import { Carregando, SemPermissao } from '@/components/EstadoPagina'
 import SeletorCongregacao from '@/components/SeletorCongregacao'
@@ -88,7 +88,7 @@ export default function TerritoriosPage() {
   useEffect(() => {
     void Promise.all([
       supabase.from('territorios').select('*').order('numero'),
-      supabase.from('quadras').select('*').order('nome'),
+      buscarTodos('quadras').then((data) => ({ data: data.sort((a, b) => String(a.nome).localeCompare(String(b.nome))) })),
       supabase.from('designacoes').select('territorio_id, data_inicio').is('quadra_id', null).is('data_fim', null),
       supabase.from('pontos_parada').select('quadra_id, idioma, qtd_pessoas').not('idioma', 'is', null),
     ]).then(([t, q, d, pi]) => {

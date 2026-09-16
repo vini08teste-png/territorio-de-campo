@@ -1,6 +1,6 @@
 'use client'
 import { useEffect, useState } from 'react'
-import { supabase, CORES_STATUS, type Quadra, type Territorio } from '@/lib/supabase'
+import { supabase, buscarTodos, CORES_STATUS, type Quadra, type Territorio } from '@/lib/supabase'
 import { usePaginaRestrita } from '@/lib/permissoes'
 import { Carregando, SemPermissao } from '@/components/EstadoPagina'
 
@@ -41,7 +41,7 @@ export default function ProgressoPage() {
 
       const [t, q, pi] = await Promise.all([
         supabase.from('territorios').select('*'),
-        supabase.from('quadras').select('*'),
+        buscarTodos('quadras').then((data) => ({ data })),
         supabase.from('pontos_parada').select('quadra_id, qtd_pessoas').not('idioma', 'is', null),
       ])
       setTerritorios(t.data || [])

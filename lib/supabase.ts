@@ -89,3 +89,17 @@ export const CORES_PERFIL = {
   superintendente_territorio: { bg: '#E8F7F0', acento: '#60C898', texto: '#04342C', label: 'Sup. de Território' },
   admin:                      { bg: '#F0EEFF', acento: '#A090E0', texto: '#26215C', label: 'Administrador' },
 }
+/** O PostgREST devolve no máximo 1000 linhas por consulta. Tabelas maiores que
+    isso (quadras, por exemplo) precisam ser lidas por páginas, senão o resto
+    simplesmente não aparece. */
+export async function buscarTodos(tabela: string, colunas = '*'): Promise<any[]> {
+  const PAGINA = 1000
+  const todos: any[] = []
+  for (let inicio = 0; ; inicio += PAGINA) {
+    const { data, error } = await supabase.from(tabela).select(colunas).range(inicio, inicio + PAGINA - 1)
+    if (error) break
+    todos.push(...((data ?? []) as any[]))
+    if (!data || data.length < PAGINA) break
+  }
+  return todos
+}

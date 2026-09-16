@@ -136,10 +136,22 @@ export async function obterTerritorios(): Promise<any[]> {
   return (await lerTudo())?.territorios as any[] ?? []
 }
 
+/** O PostgREST corta a resposta em 1000 linhas. Com mais quadras que isso, as
+    excedentes simplesmente não vinham — e sumiam do mapa. Busca por páginas. */
+const PAGINA = 1000
+
 export async function obterQuadras(): Promise<any[]> {
   if (online()) {
-    const { data } = await supabase.from('quadras').select('*')
-    if (data) { await atualizarFatia({ quadras: data }); return data }
+    const todas: any[] = []
+    for (let inicio = 0; ; inicio += PAGINA) {
+      const { data, error } = await supabase.from('quadras').select('*').range(inicio, inicio + PAGINA - 1)
+      if (error) break
+      todas.push(...(data ?? []))
+      if (!data || data.length < PAGINA) {
+        await atualizarFatia({ quadras: todas })
+        return todas
+      }
+    }
   }
   return (await lerTudo())?.quadras as any[] ?? []
 }
