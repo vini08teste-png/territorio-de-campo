@@ -59,7 +59,7 @@ function LoginForm() {
 
   return (
     <div style={{
-      minHeight: '100vh',
+      minHeight: '100dvh',
       background: '#F7F7F7',
       display: 'flex',
       flexDirection: 'column',

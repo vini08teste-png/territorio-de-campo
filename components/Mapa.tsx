@@ -166,7 +166,10 @@ export default function Mapa() {
   const selecionadasRef = useRef<Set<string>>(new Set())
   const drawSelecaoRef = useRef<any>(null)
   const drawContornoRef = useRef<any>(null)
-  const edicaoGeometriaRef = useRef<{ camada: any; sub: any; desabilitarArraste: () => void } | null>(null)
+  const edicaoGeometriaRef = useRef<{
+    camada: any; sub: any; desabilitarArraste: () => void
+    quadrasVinculadas: { id: string; layer: any }[]
+  } | null>(null)
 
   const [usuario, setUsuario] = useState<Usuario | null>(null)
   const [territorios, setTerritorios] = useState<Territorio[]>([])
@@ -177,9 +180,10 @@ export default function Mapa() {
   const [painelAberto, setPainelAberto] = useState(false)
   const [atividadesRecentes, setAtividadesRecentes] = useState<AtividadeRecente[]>([])
   const [atividadesRecentesFechado, setAtividadesRecentesFechado] = useState(false)
+  const [atividadesExpandido, setAtividadesExpandido] = useState(false)
   const [modoDesenho, setModoDesenho] = useState(false)
   const [desenhandoContornoDe, setDesenhandoContornoDe] = useState<Territorio | null>(null)
-  const [editandoGeometria, setEditandoGeometria] = useState<{ tipo: 'quadra' | 'territorio'; id: string; nome: string } | null>(null)
+  const [editandoGeometria, setEditandoGeometria] = useState<{ tipo: 'quadra' | 'territorio'; id: string; nome: string; totalQuadrasJunto: number } | null>(null)
   const [salvando, setSalvando] = useState(false)
   const [feedback, setFeedback] = useState<string | null>(null)
   const [painelOSM, setPainelOSM] = useState(false)
@@ -811,7 +815,17 @@ export default function Mapa() {
     return e
   }
 
-  function habilitarArrasteDoCorpo(sub: any, m: any, L: any) {
+  /** Desloca um conjunto de latlngs (aninhado em qualquer profundidade) por um delta fixo. */
+  function deslocarLatLngs(latlngs: any, dLat: number, dLng: number, L: any): any {
+    return Array.isArray(latlngs)
+      ? latlngs.map((item: any) => deslocarLatLngs(item, dLat, dLng, L))
+      : L.latLng(latlngs.lat + dLat, latlngs.lng + dLng)
+  }
+
+  /** `aoDeslocar`, quando passado, é chamado a cada passo do arraste do corpo
+      (não do vértice) com o delta em graus — usado pra levar junto as quadras
+      de um território sendo movido, já que são registros/desenhos separados. */
+  function habilitarArrasteDoCorpo(sub: any, m: any, L: any, aoDeslocar?: (dLat: number, dLng: number) => void) {
     let arrastando = false
     let ultimoLatLng: any = null
     const container = m.getContainer()
@@ -827,9 +841,8 @@ export default function Mapa() {
       const dLat = atual.lat - ultimoLatLng.lat
       const dLng = atual.lng - ultimoLatLng.lng
       ultimoLatLng = atual
-      const deslocar = (latlngs: any): any =>
-        Array.isArray(latlngs) ? latlngs.map(deslocar) : L.latLng(latlngs.lat + dLat, latlngs.lng + dLng)
-      sub.setLatLngs(deslocar(sub.getLatLngs()))
+      sub.setLatLngs(deslocarLatLngs(sub.getLatLngs(), dLat, dLng, L))
+      aoDeslocar?.(dLat, dLng)
     }
 
     function aoSoltar() {
@@ -840,9 +853,18 @@ export default function Mapa() {
       container.removeEventListener('touchmove', aoMover)
       window.removeEventListener('mouseup', aoSoltar)
       window.removeEventListener('touchend', aoSoltar)
-      // Os pontinhos de vértice do leaflet-draw ficam na posição antiga depois
-      // de mover o corpo todo por código — desliga e religa pra reposicionar.
-      try { sub.editing.disable(); sub.editing.enable() } catch { /* segue sem os pontinhos */ }
+      // O leaflet-draw guarda a lista de vértices que está editando no momento
+      // do enable() — depois de mover o corpo todo via setLatLngs (que troca o
+      // array por um novo), os pontinhos antigos ficam presos na posição de
+      // ANTES do arraste. Só desligar/religar não basta (reaproveita a mesma
+      // referência velha); tem que recriar o handler do zero pra ele reler a
+      // posição atual. Sem isso, arrastar um pontinho "fantasma" depois jogava
+      // a quadra de volta pra posição antiga (é o bug do "some a quadra").
+      try {
+        sub.editing.disable()
+        sub.editing = new L.Edit.Poly(sub)
+        sub.editing.enable()
+      } catch { /* segue sem os pontinhos */ }
     }
 
     function aoIniciar(e: any) {
@@ -911,11 +933,29 @@ export default function Mapa() {
       return
     }
     sub.editing.enable()
-    const desabilitarArraste = habilitarArrasteDoCorpo(sub, m, L)
+
+    // Mover o território arrasta as quadras dele junto — senão elas ficam
+    // pra trás, fora do contorno novo (as quadras são registros/desenhos à
+    // parte, não fazem parte do polígono do território). Reformatar só os
+    // vértices do contorno (sem arrastar o corpo) não mexe nas quadras.
+    const quadrasVinculadas = tipo === 'territorio'
+      ? layersRef.current
+        .filter((l: any) => l._quadra?.territorio_id === id)
+        .map((l: any) => ({ id: l._quadra.id as string, layer: l.getLayers?.()[0] }))
+        .filter((q: any) => !!q.layer)
+      : []
+
+    const desabilitarArraste = habilitarArrasteDoCorpo(sub, m, L, quadrasVinculadas.length > 0
+      ? (dLat, dLng) => {
+        for (const q of quadrasVinculadas) {
+          q.layer.setLatLngs(deslocarLatLngs(q.layer.getLatLngs(), dLat, dLng, L))
+        }
+      }
+      : undefined)
     try { m.fitBounds(sub.getBounds(), { maxZoom: 18, padding: [40, 40] }) } catch { /* geometria vazia */ }
 
-    edicaoGeometriaRef.current = { camada, sub, desabilitarArraste }
-    setEditandoGeometria({ tipo, id, nome })
+    edicaoGeometriaRef.current = { camada, sub, desabilitarArraste, quadrasVinculadas }
+    setEditandoGeometria({ tipo, id, nome, totalQuadrasJunto: quadrasVinculadas.length })
   }
 
   async function salvarEdicaoGeometria() {
@@ -925,10 +965,21 @@ export default function Mapa() {
     const geojson = estado.sub.toGeoJSON()
     const tabela = editandoGeometria.tipo === 'quadra' ? 'quadras' : 'territorios'
     const { error } = await supabase.from(tabela).update({ geojson }).eq('id', editandoGeometria.id)
+
+    // Se moveu o corpo de um território, as quadras dele foram deslocadas
+    // junto na tela — grava a nova posição de cada uma também.
+    let erroQuadras = false
+    if (!error) {
+      for (const q of estado.quadrasVinculadas) {
+        const { error: erroQ } = await supabase.from('quadras').update({ geojson: q.layer.toGeoJSON() }).eq('id', q.id)
+        if (erroQ) erroQuadras = true
+      }
+    }
+
     setSalvando(false)
     encerrarEdicaoGeometria()
     if (error) { mostrarFeedback('Erro ao salvar.'); return }
-    mostrarFeedback('Posição salva!')
+    mostrarFeedback(erroQuadras ? 'Contorno salvo, mas algumas quadras não puderam ser movidas junto.' : 'Posição salva!')
     void carregarQuadras()
   }
 
@@ -1087,6 +1138,8 @@ export default function Mapa() {
         }}>
           <span>
             ↔️ Movendo <strong>{editandoGeometria.nome}</strong>: arraste o desenho inteiro ou puxe os pontinhos das bordas pra ajustar o formato.
+            {editandoGeometria.totalQuadrasJunto > 0 &&
+              ` As ${editandoGeometria.totalQuadrasJunto} quadra(s) deste território andam junto ao arrastar o corpo todo.`}
           </span>
           <button
             onClick={cancelarEdicaoGeometria}
@@ -1105,43 +1158,57 @@ export default function Mapa() {
         </div>
       )}
 
-      {/* Onde parou — atividade recente da congregação */}
+      {/* Onde parou — recolhido por padrão (só um selo); expande ao tocar */}
       {!modoDesenho && !modalCriar && !modalPonto && !painelOSM && !modoSelecao && !painelAberto && !desenhandoContornoDe && !editandoGeometria && atividadesRecentes.length > 0 && !atividadesRecentesFechado && (
-        <div style={{
-          position: 'absolute', top: 10, right: 10, zIndex: 900,
-          background: '#fff', border: '1px solid #DDD', borderRadius: 8,
-          boxShadow: '0 1px 4px rgba(0,0,0,0.15)', padding: '8px 6px 8px 12px',
-          maxWidth: 260,
-        }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 4 }}>
-            <span style={{ fontSize: 11, color: '#888', fontWeight: 600, flex: 1 }}>
-              ▶ {atividadesRecentes.length > 1 ? 'Trabalhando agora' : 'Continuar de onde parou'}
-            </span>
+        <div style={{ position: 'absolute', top: 58, left: 10, zIndex: 900, maxWidth: 'calc(100% - 20px)' }}>
+          {!atividadesExpandido ? (
             <button
-              onClick={() => setAtividadesRecentesFechado(true)}
-              title="Fechar"
-              style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#AAA', fontSize: 14, padding: '2px 4px', flexShrink: 0 }}
+              onClick={() => setAtividadesExpandido(true)}
+              style={{
+                display: 'inline-flex', alignItems: 'center', gap: 7,
+                background: '#fff', border: '1px solid #DDD', borderRadius: 20,
+                boxShadow: '0 1px 4px rgba(0,0,0,0.15)', padding: '7px 13px',
+                fontSize: 13, fontWeight: 600, color: '#1A1A1A', cursor: 'pointer',
+              }}
             >
-              ✕
+              <span style={{ width: 7, height: 7, borderRadius: 4, background: '#3BAD68', flexShrink: 0 }} />
+              Em campo agora
+              <span style={{ background: '#EAF7EF', color: '#0F6E56', borderRadius: 10, fontSize: 11, fontWeight: 700, padding: '1px 7px' }}>
+                {atividadesRecentes.length}
+              </span>
             </button>
-          </div>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-            {atividadesRecentes.map((a) => (
-              <button
-                key={a.territorioId}
-                onClick={() => continuarDeOndeParou(a)}
-                style={{
-                  display: 'flex', flexDirection: 'column', alignItems: 'flex-start', gap: 1,
-                  background: 'none', border: 'none', cursor: 'pointer', padding: '4px 0', textAlign: 'left',
-                  borderTop: '1px solid #F0F0F0',
-                }}
-              >
-                <span style={{ fontSize: 13, color: '#1A1A1A', fontWeight: 700 }}>#{a.territorioNumero} — {a.territorioNome}</span>
-                <span style={{ fontSize: 11, color: '#666' }}>{a.grupoNome ?? 'Sem grupo'} · {a.usuarioNome}</span>
-                <span style={{ fontSize: 11, color: '#AAA' }}>{a.quadraNome} · {formatarAtualizadoEm(a.criadoEm)}</span>
-              </button>
-            ))}
-          </div>
+          ) : (
+            <div style={{
+              background: '#fff', border: '1px solid #DDD', borderRadius: 12,
+              boxShadow: '0 2px 10px rgba(0,0,0,0.18)', width: 250, maxWidth: '100%', overflow: 'hidden',
+            }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '9px 8px 9px 13px', borderBottom: '1px solid #F0F0F0' }}>
+                <span style={{ width: 7, height: 7, borderRadius: 4, background: '#3BAD68', flexShrink: 0 }} />
+                <span style={{ fontSize: 12, color: '#1A1A1A', fontWeight: 700, flex: 1 }}>Em campo agora</span>
+                <button onClick={() => setAtividadesExpandido(false)} title="Recolher"
+                  style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#888', fontSize: 15, padding: '0 4px', flexShrink: 0 }}>▾</button>
+                <button onClick={() => setAtividadesRecentesFechado(true)} title="Fechar"
+                  style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#BBB', fontSize: 14, padding: '0 2px', flexShrink: 0 }}>✕</button>
+              </div>
+              {atividadesRecentes.slice(0, 4).map((a, i) => (
+                <button
+                  key={a.territorioId}
+                  onClick={() => { setAtividadesExpandido(false); continuarDeOndeParou(a) }}
+                  style={{
+                    display: 'flex', alignItems: 'center', gap: 10, width: '100%',
+                    background: 'none', border: 'none', cursor: 'pointer', padding: '10px 13px', textAlign: 'left',
+                    borderTop: i === 0 ? 'none' : '1px solid #F5F5F5',
+                  }}
+                >
+                  <div style={{ minWidth: 0, flex: 1 }}>
+                    <div style={{ fontSize: 13, color: '#1A1A1A', fontWeight: 700, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>#{a.territorioNumero} — {a.territorioNome}</div>
+                    <div style={{ fontSize: 11, color: '#888', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{a.usuarioNome} · {formatarAtualizadoEm(a.criadoEm)}</div>
+                  </div>
+                  <span style={{ color: '#CCC', fontSize: 16, flexShrink: 0 }}>›</span>
+                </button>
+              ))}
+            </div>
+          )}
         </div>
       )}
 

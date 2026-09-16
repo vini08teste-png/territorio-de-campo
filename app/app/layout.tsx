@@ -240,7 +240,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
   }
 
   if (!usuario) return (
-    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100vh', background: '#fff' }}>
+    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100dvh', background: '#fff' }}>
       <div style={{ textAlign: 'center' }}>
         <IconMapa size={40} color="#3BAD68" />
         <p style={{ fontSize: 16, color: '#3BAD68', marginTop: 12, fontWeight: 600 }}>Carregando...</p>
