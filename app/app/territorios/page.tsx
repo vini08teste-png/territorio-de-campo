@@ -135,7 +135,7 @@ export default function TerritoriosPage() {
       })
       .select().single()
     setSalvando(false)
-    if (error) { mostrarErro('Erro ao criar território.'); return }
+    if (error) { mostrarErro(`Erro ao criar território: ${error.message}`); return }
     if (data) {
       const novoTerritorio = data as Territorio
       setTerritorios((prev) => [...prev, novoTerritorio].sort((a, b) => Number(a.numero) - Number(b.numero)))
