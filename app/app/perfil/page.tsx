@@ -1,6 +1,7 @@
 'use client'
 import { useEffect, useState } from 'react'
 import { supabase, CORES_PERFIL, type Usuario } from '@/lib/supabase'
+import BotaoSalvarOffline from '@/components/BotaoSalvarOffline'
 
 export default function PerfilPage() {
   const [usuario, setUsuario] = useState<Usuario | null>(null)
@@ -52,6 +53,8 @@ export default function PerfilPage() {
           </div>
         </div>
       </div>
+
+      <BotaoSalvarOffline />
 
       <div className="card">
         <h2 style={{ fontSize: 20, fontWeight: 700, marginBottom: 16 }}>🔒 Trocar senha</h2>

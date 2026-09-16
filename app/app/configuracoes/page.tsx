@@ -3,6 +3,7 @@
 import { useEffect, useState, useCallback } from 'react'
 import { supabase } from '@/lib/supabase'
 import { useCongregacoesExistentes, useCongregacoesCompletas, type CongregacaoCompleta } from '@/lib/congregacoes'
+import BotaoSalvarOffline from '@/components/BotaoSalvarOffline'
 
 interface ConfigCong {
   cidade: string
@@ -149,6 +150,8 @@ export default function ConfiguracoesPage() {
           ✅ Configurações salvas com sucesso!
         </div>
       )}
+
+      <BotaoSalvarOffline />
 
       <GerenciarCongregacoes />
 

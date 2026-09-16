@@ -7,6 +7,7 @@ import ImportarOSM from '@/components/ImportarOSM'
 import { escaparHtml, linkComoChegar } from '@/lib/territorio'
 import { useValidacaoAutomaticaPorCongregacao } from '@/lib/congregacoes'
 import { marcarQuadra, salvarPontoParada } from '@/lib/offline/acoesCampo'
+import { obterUsuario, obterTerritorios, obterQuadras, obterPontos } from '@/lib/offline/dadosOffline'
 
 
 // Setada pela tela de Territórios antes de mandar o usuário pro mapa, pra
@@ -399,18 +400,21 @@ export default function Mapa() {
     if (!m) return
     const L = (window as any).L
 
-    const { data: { user } } = await supabase.auth.getUser()
+    // getSession lê do localStorage (funciona offline); getUser faria chamada de
+    // rede e abortaria tudo sem sinal. As leituras abaixo caem no que foi
+    // "Salvo para uso offline" (ver lib/offline/dadosOffline) quando offline.
+    const { data: { session } } = await supabase.auth.getSession()
+    const user = session?.user
     if (!user) return
 
-    const { data: usuarioData } = await supabase.from('usuarios').select('*').eq('id', user.id).single()
+    const usuarioData = await obterUsuario(user.id)
     if (usuarioData) setUsuario(usuarioData)
 
-    const { data: terrsData } = await supabase.from('territorios')
-      .select('id, nome, numero, geojson, link_maps, cor, congregacao').order('numero')
+    const terrsData = await obterTerritorios()
     setTerritorios(terrsData ?? [])
     setTerritoriosCarregados(true)
 
-    const { data: quadrasData } = await supabase.from('quadras').select('*')
+    const quadrasData = await obterQuadras()
     if (!quadrasData) return
 
     // Depois de vários awaits, "m" pode já ter sido substituído/removido
@@ -476,10 +480,7 @@ export default function Mapa() {
       layersRef.current.push(layer)
     }
 
-    const { data: pontosData } = await supabase
-      .from('pontos_parada')
-      .select('*, usuario:usuario_id(nome)')
-      .order('criado_em', { ascending: false })
+    const pontosData = await obterPontos()
     setTodosPontos(pontosData ?? [])
     if (mapInstanceRef.current !== m) return
     renderizarPontos(m, pontosData ?? [])
