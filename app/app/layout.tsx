@@ -177,10 +177,37 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
   }, [])
 
   useEffect(() => {
-    supabase.auth.getSession().then(async ({ data: { session } }) => {
-      if (!session) { router.push('/login'); return }
-      const { data } = await supabase.from('usuarios').select('*').eq('id', session.user.id).single()
-      if (!data) { router.push('/login'); return }
+    // Identidade salva localmente pra o app não travar no "Carregando…" offline.
+    const lerUsuarioSalvo = (): Usuario | null => {
+      try { return JSON.parse(localStorage.getItem('tc_usuario') || 'null') } catch { return null }
+    }
+
+    async function carregar() {
+      // Sem sinal: usa a identidade salva direto, sem depender da rede.
+      if (typeof navigator !== 'undefined' && !navigator.onLine) {
+        const salvo = lerUsuarioSalvo()
+        if (salvo) { setUsuario(salvo); return }
+      }
+
+      const { data: { session } } = await supabase.auth.getSession()
+      if (!session) {
+        // Sessão pode ter expirado offline — se tem identidade salva, segue.
+        const salvo = lerUsuarioSalvo()
+        if (salvo) { setUsuario(salvo); return }
+        router.push('/login'); return
+      }
+
+      let data: Usuario | null = null
+      try {
+        const res = await supabase.from('usuarios').select('*').eq('id', session.user.id).single()
+        data = res.data
+      } catch { /* rede falhou — cai no fallback abaixo */ }
+
+      if (!data) {
+        const salvo = lerUsuarioSalvo()
+        if (salvo) { setUsuario(salvo); return }
+        router.push('/login'); return
+      }
 
       if (!data.ativo) {
         await logout()
@@ -200,8 +227,11 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
         return
       }
 
+      try { localStorage.setItem('tc_usuario', JSON.stringify(data)) } catch { /* cota cheia, ignora */ }
       setUsuario(data)
-    })
+    }
+
+    void carregar()
   }, [router, pathname])
 
   async function handleLogout() {

@@ -7,7 +7,7 @@
    marcações fica pra uma fase futura). */
 
 // Bump this string pra invalidar caches antigos num deploy novo.
-const VERSAO = 'tc-v1'
+const VERSAO = 'tc-v2'
 const CACHE_CASCO = `${VERSAO}-casco`
 const CACHE_ESTATICO = `${VERSAO}-estatico`
 const CACHE_DADOS = `${VERSAO}-dados`
@@ -102,6 +102,25 @@ async function cacheFirst(request, nomeCache, teto) {
   return resposta
 }
 
+// Navegação offline-resiliente: rede primeiro; se falhar, serve a própria
+// página salva, senão o casco do /app, senão a raiz.
+async function navegar(request) {
+  const casco = await caches.open(CACHE_CASCO)
+  try {
+    const resposta = await fetch(request)
+    if (resposta && resposta.ok) casco.put(request, resposta.clone())
+    return resposta
+  } catch (e) {
+    const exata = await casco.match(request, { ignoreSearch: true })
+    if (exata) return exata
+    const app = await casco.match('/app')
+    if (app) return app
+    const raiz = await casco.match('/')
+    if (raiz) return raiz
+    throw e
+  }
+}
+
 async function limitarCache(nomeCache, teto) {
   const cache = await caches.open(nomeCache)
   const chaves = await cache.keys()
@@ -119,9 +138,19 @@ self.addEventListener('fetch', (evento) => {
   const host = url.hostname
   const path = url.pathname
 
-  // Navegações (abrir uma página) → rede primeiro, cai pro que já foi salvo.
+  // Navegações (abrir uma página) → rede primeiro; offline, tenta a própria
+  // página salva, depois o casco do /app, depois o /. Garante que SEMPRE
+  // renderize alguma coisa offline em vez da tela de dinossauro do navegador.
   if (request.mode === 'navigate') {
-    evento.respondWith(networkFirst(request, CACHE_CASCO, url.pathname.startsWith('/app') ? '/app' : '/'))
+    evento.respondWith(navegar(request))
+    return
+  }
+
+  // Pedaços de navegação do Next (RSC) e dados de página → SWR, pra a navegação
+  // client-side (router.push) funcionar offline depois de visitada online.
+  if (url.origin === self.location.origin &&
+      (url.search.includes('_rsc') || (request.headers.get('accept') || '').includes('text/x-component'))) {
+    evento.respondWith(staleWhileRevalidate(request, CACHE_ESTATICO))
     return
   }
 

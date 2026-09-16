@@ -7,4 +7,5 @@ export function limparCacheDados() {
   try {
     navigator.serviceWorker?.controller?.postMessage('LIMPAR_DADOS')
   } catch { /* sem SW ativo, nada a limpar */ }
+  try { localStorage.removeItem('tc_usuario') } catch { /* ignora */ }
 }
