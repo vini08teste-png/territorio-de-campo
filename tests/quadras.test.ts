@@ -5,7 +5,10 @@ import {
   caixaDoContorno, consultaRuas, featureDaQuadra, gerarQuadras, gerarQuadrasDoContorno,
   lerRuasDoOverpass, type Ponto, type RuaOSM,
 } from '@/lib/quadrasOSM'
-import { nomeDaQuadra, proximaSequencia } from '@/lib/quadras'
+import {
+  centroDaQuadra, nomeDaQuadra, ordenarEmSentidoHorario, prefixoDoTerritorio,
+  prefixosSemColisao, proximaSequencia, renomearQuadrasDoTerritorio,
+} from '@/lib/quadras'
 
 const LAT = -6.52
 const LNG = -49.85
@@ -109,10 +112,65 @@ test('consulta cobre o contorno com margem', () => {
 })
 
 test('nomes em sequência dentro do território', () => {
-  assert.equal(nomeDaQuadra('21', 1), '21-01')
-  assert.equal(nomeDaQuadra('2', 12), '02-12')
-  assert.equal(proximaSequencia(['21-01', '21-07', 'Quadra A'], '21'), 8)
-  assert.equal(proximaSequencia([], '06'), 1)
+  assert.equal(nomeDaQuadra('JP', 1), 'JP01')
+  assert.equal(nomeDaQuadra('CE', 12), 'CE12')
+  assert.equal(proximaSequencia(['JP01', 'JP07', 'Quadra A'], 'JP'), 8)
+  assert.equal(proximaSequencia([], 'CE'), 1)
+})
+
+test('prefixo do território: duas palavras vira inicial de cada, uma palavra vira as 2 primeiras letras', () => {
+  assert.equal(prefixoDoTerritorio('Jardim Palmeiras'), 'JP')
+  assert.equal(prefixoDoTerritorio('Centro'), 'CE')
+  assert.equal(prefixoDoTerritorio('Alvorada'), 'AL')
+  assert.equal(prefixoDoTerritorio('Bela Vista I'), 'BV')
+})
+
+test('prefixos sem colisão: território repetido ganha um número extra', () => {
+  const mapa = prefixosSemColisao([
+    { id: '1', nome: 'Bela Vista I' },
+    { id: '2', nome: 'Bela Vista II' },
+    { id: '3', nome: 'Bela Vista III' },
+    { id: '4', nome: 'Centro' },
+  ])
+  assert.equal(mapa.get('1'), 'BV')
+  assert.equal(mapa.get('2'), 'BV2')
+  assert.equal(mapa.get('3'), 'BV3')
+  assert.equal(mapa.get('4'), 'CE')
+})
+
+test('centro da quadra: média dos vértices do anel, sem contar o de fechamento', () => {
+  const geojson = { geometry: { coordinates: [[[0, 0], [2, 0], [2, 2], [0, 2], [0, 0]]] } }
+  assert.deepEqual(centroDaQuadra(geojson), [1, 1])
+})
+
+test('ordena em sentido horário a partir do norte', () => {
+  const itens = [
+    { id: 'leste', centro: [1, 0] as Ponto },
+    { id: 'norte', centro: [0, 1] as Ponto },
+    { id: 'sul', centro: [0, -1] as Ponto },
+    { id: 'oeste', centro: [-1, 0] as Ponto },
+  ]
+  const ordenado = ordenarEmSentidoHorario(itens, [0, 0])
+  assert.deepEqual(ordenado.map((i) => i.id), ['norte', 'leste', 'sul', 'oeste'])
+})
+
+test('renomeia as quadras de um território em sentido horário, numeradas a partir do prefixo', () => {
+  const quadrado = (cx: number, cy: number) => ({
+    geometry: { coordinates: [[[cx - 0.1, cy - 0.1], [cx + 0.1, cy - 0.1], [cx + 0.1, cy + 0.1], [cx - 0.1, cy + 0.1], [cx - 0.1, cy - 0.1]]] },
+  })
+  const quadras = [
+    { id: 'a', geojson: quadrado(0, 1) },  // norte
+    { id: 'b', geojson: quadrado(1, 0) },  // leste
+    { id: 'c', geojson: quadrado(0, -1) }, // sul
+    { id: 'd', geojson: quadrado(-1, 0) }, // oeste
+  ]
+  const renomeadas = renomearQuadrasDoTerritorio(quadras, 'JP')
+  assert.deepEqual(renomeadas, [
+    { id: 'a', nome: 'JP01' },
+    { id: 'b', nome: 'JP02' },
+    { id: 'c', nome: 'JP03' },
+    { id: 'd', nome: 'JP04' },
+  ])
 })
 
 test('bairro irregular: diagonal, curva e rua sem saída', () => {

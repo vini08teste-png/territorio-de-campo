@@ -8,7 +8,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { supabase } from '@/lib/supabase'
-import { nomeDaQuadra, proximaSequencia } from '@/lib/quadras'
+import { nomeDaQuadra, prefixoDoTerritorio, prefixosSemColisao, proximaSequencia } from '@/lib/quadras'
 import { featureDaQuadra, gerarQuadrasDoContorno, type QuadraGerada } from '@/lib/quadrasOSM'
 import { poligonosDoContorno } from '@/lib/territorio'
 
@@ -99,7 +99,7 @@ export default function ImportarOSM({ mapInstance: map, territorios, onConcluir,
   // território, entra o prefixo "NC" (não classificada) em vez do número dele.
   const nomes = useMemo(() => {
     if (!modoCidade && !territorio) return new Map<number, string>()
-    const prefixo = modoCidade ? 'NC' : territorio!.numero
+    const prefixo = modoCidade ? 'NC' : (prefixosSemColisao(comContorno).get(territorio!.id) ?? prefixoDoTerritorio(territorio!.nome))
     let sequencia = proximaSequencia(quadrasExistentes, prefixo)
     const mapa = new Map<number, string>()
     quadras.forEach((_, i) => {
@@ -108,7 +108,7 @@ export default function ImportarOSM({ mapInstance: map, territorios, onConcluir,
       sequencia++
     })
     return mapa
-  }, [quadras, selecionadas, quadrasExistentes, territorio, modoCidade])
+  }, [quadras, selecionadas, quadrasExistentes, territorio, modoCidade, comContorno])
 
   // Rótulo com o nome que cada quadra vai receber ao gravar
   useEffect(() => {
@@ -254,6 +254,8 @@ export default function ImportarOSM({ mapInstance: map, territorios, onConcluir,
       comQuadras.set(q.territorio_id, (comQuadras.get(q.territorio_id) ?? 0) + 1)
     }
 
+    const prefixos = prefixosSemColisao(comContorno)
+
     const linhas: LinhaResumo[] = []
     for (let i = 0; i < comContorno.length; i++) {
       if (controle.signal.aborted) return
@@ -277,7 +279,7 @@ export default function ImportarOSM({ mapInstance: map, territorios, onConcluir,
         } else {
           const registros = geradas.map((quadra, k) => ({
             territorio_id: alvo.id,
-            nome: nomeDaQuadra(alvo.numero, k + 1),
+            nome: nomeDaQuadra(prefixos.get(alvo.id) ?? prefixoDoTerritorio(alvo.nome), k + 1),
             status: 'nao_iniciado',
             geojson: featureDaQuadra(quadra),
           }))

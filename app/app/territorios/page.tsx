@@ -9,7 +9,7 @@ import { Carregando, SemPermissao } from '@/components/EstadoPagina'
 import SeletorCongregacao from '@/components/SeletorCongregacao'
 import { calcularPrazoTerritorio, formatarPrazo } from '@/lib/prazoTerritorio'
 import { useMapaPrazoPorCongregacao } from '@/lib/congregacoes'
-import { linkComoChegar, textoOuNulo } from '@/lib/territorio'
+import { formatarNumeroTerritorio, linkComoChegar, textoOuNulo } from '@/lib/territorio'
 
 interface DesignacaoSG {
   territorio_id: string
@@ -30,6 +30,7 @@ const SEM_TERRITORIO = 'sem-territorio'
 // Mesma chave que components/Mapa.tsx lê pra saber qual território
 // desenhar assim que o mapa abrir.
 const CHAVE_DESENHAR_TERRITORIO = 'territorio_de_campo:desenhar_territorio_id'
+const CHAVE_EDITAR_TERRITORIO = 'territorio_de_campo:editar_territorio_id'
 
 const FORM_VAZIO = { nome: '', numero: '', bairro: '', link_maps: '', congregacao: '', cor: '' }
 type FormTerritorio = typeof FORM_VAZIO
@@ -104,6 +105,19 @@ export default function TerritoriosPage() {
   function irDesenharContorno(territorioId: string) {
     localStorage.setItem(CHAVE_DESENHAR_TERRITORIO, territorioId)
     router.push('/app')
+  }
+
+  function irEditarContorno(territorioId: string) {
+    localStorage.setItem(CHAVE_EDITAR_TERRITORIO, territorioId)
+    router.push('/app')
+  }
+
+  // Sugere o próximo número livre (maior número atual + 1) ao abrir o
+  // formulário de criação — o ST não precisa mais descobrir na mão qual é o
+  // próximo; ainda dá pra editar o campo se precisar de outro número.
+  function proximoNumeroTerritorio(): string {
+    const maior = territorios.reduce((max, t) => Math.max(max, Number(t.numero) || 0), 0)
+    return formatarNumeroTerritorio(maior + 1)
   }
 
   // ── Território ───────────────────────────────────────────────────────────────
@@ -293,7 +307,13 @@ export default function TerritoriosPage() {
           📐 Importar do PDF
         </Link>
         <button onClick={() => {
-          if (!criando && !souAdmin) setForm((p) => ({ ...p, congregacao: usuario?.congregacao ?? '' }))
+          if (!criando) {
+            setForm((p) => ({
+              ...p,
+              numero: proximoNumeroTerritorio(),
+              ...(souAdmin ? {} : { congregacao: usuario?.congregacao ?? '' }),
+            }))
+          }
           setCriando(!criando)
         }} style={{
           padding: '10px 18px', fontSize: 14, fontWeight: 600,
@@ -605,9 +625,17 @@ export default function TerritoriosPage() {
                 }}>
                   🖊️ {editandoTerr.geojson ? 'Redesenhar contorno no mapa' : 'Desenhar contorno no mapa'}
                 </button>
+                {editandoTerr.geojson && souAdmin && (
+                  <button type="button" onClick={() => irEditarContorno(editandoTerr.id)} style={{
+                    width: '100%', padding: '11px', fontSize: 14, fontWeight: 600, marginTop: 8,
+                    background: '#FFF6EA', color: '#B5590A', border: '1px solid #FFD9A8', borderRadius: 8, cursor: 'pointer',
+                  }}>
+                    ↔️ Mover / ajustar contorno no mapa
+                  </button>
+                )}
                 <p style={{ fontSize: 12, color: '#999', margin: '6px 0 0' }}>
                   {editandoTerr.geojson
-                    ? 'Esse território já tem contorno próprio.'
+                    ? 'Esse território já tem contorno próprio. "Mover" mantém o formato e só ajusta a posição/pontos; "Redesenhar" descarta e começa do zero.'
                     : 'Sem contorno próprio ainda — o mapa mostra uma área estimada com base nas quadras.'}
                 </p>
               </div>

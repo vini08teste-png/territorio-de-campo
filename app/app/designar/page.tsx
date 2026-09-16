@@ -98,6 +98,7 @@ export default function DesignarPage() {
   const [dirigentesAtivos, setDirigentesAtivos] = useState<Usuario[]>([])
   const [formST, setFormST] = useState({ territorio_id: '', usuario_id: '' })
   const [formGrupo, setFormGrupo] = useState({ sg_id: '', dirigente_id: '' })
+  const [buscaTerritorio, setBuscaTerritorio] = useState('')
 
   function mostrarSucesso(msg: string) {
     setSucesso(msg)
@@ -287,6 +288,17 @@ export default function DesignarPage() {
     )
   }
 
+  const filtro = buscaTerritorio.trim().toLowerCase()
+  const designacoesFiltradas = !filtro ? designacoes : designacoes.filter((d) => {
+    const t = d.territorio
+    return (
+      t?.nome?.toLowerCase().includes(filtro) ||
+      t?.bairro?.toLowerCase().includes(filtro) ||
+      String(t?.numero ?? '').includes(filtro) ||
+      d.usuario?.nome?.toLowerCase().includes(filtro)
+    )
+  })
+
   return (
     <div style={{ maxWidth: 720, margin: '0 auto', padding: '1.5rem 1rem 4rem' }}>
 
@@ -439,14 +451,32 @@ export default function DesignarPage() {
           </span>
         </h2>
 
+        {designacoes.length > 0 && (
+          <input
+            type="text"
+            value={buscaTerritorio}
+            onChange={(e) => setBuscaTerritorio(e.target.value)}
+            placeholder="🔎 Buscar por território, bairro, número ou SG…"
+            style={{
+              width: '100%', padding: '11px 14px', fontSize: 15, marginBottom: '1rem',
+              border: '1px solid #DDDDDD', borderRadius: 8, background: '#FAFAFA', color: '#1A1A1A',
+              outline: 'none', boxSizing: 'border-box',
+            }}
+          />
+        )}
+
         {designacoes.length === 0 ? (
           <div style={{ textAlign: 'center', padding: '2.5rem 1rem', background: '#F7F7F7', borderRadius: 12, border: '1px dashed #DDDDDD' }}>
             <div style={{ fontSize: 40, marginBottom: 12 }}>🗺️</div>
             <p style={{ fontSize: 16, color: '#666', margin: 0 }}>Nenhum território designado ainda.</p>
           </div>
+        ) : designacoesFiltradas.length === 0 ? (
+          <div style={{ textAlign: 'center', padding: '2.5rem 1rem', background: '#F7F7F7', borderRadius: 12, border: '1px dashed #DDDDDD' }}>
+            <p style={{ fontSize: 15, color: '#666', margin: 0 }}>Nenhum resultado pra &ldquo;{buscaTerritorio}&rdquo;.</p>
+          </div>
         ) : (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-            {designacoes.map((d) => {
+            {designacoesFiltradas.map((d) => {
               const usuario = d.usuario
               const territorio = d.territorio
               const dataInicio = d.data_inicio

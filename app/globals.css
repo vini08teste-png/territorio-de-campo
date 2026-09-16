@@ -74,6 +74,13 @@ body {
   font-size: 9px;
   font-weight: 700;
   white-space: nowrap;
+  /* Some com zoom baixo: com muitos territórios, o nome de todos ao mesmo
+     tempo sobrepõe e polui o mapa inteiro (ver Mapa.tsx, mostrar-nome-territorio). */
+  display: none;
+}
+
+.leaflet-container.mostrar-nome-territorio .rotulo-territorio-nome {
+  display: block;
 }
 
 .leaflet-tooltip.rotulo-territorio::before { display: none; }

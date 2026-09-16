@@ -211,6 +211,9 @@ export default function Mapa() {
 
   // ST e admin (que herda tudo que ST faz) podem desenhar/excluir quadras
   const podeGerenciarQuadras = usuario?.perfil === 'superintendente_territorio' || usuario?.perfil === 'admin'
+  // Mover/ajustar o desenho (arrastar forma ou vértice) é só do admin master —
+  // mais fácil de bagunçar a geometria de todo mundo do que desenhar do zero.
+  const souAdminMapa = usuario?.perfil === 'admin'
   // Toda a hierarquia herda a capacidade do dirigente de marcar em campo
   const podeMarcar = !!usuario
 
@@ -948,7 +951,7 @@ export default function Mapa() {
     if (idEditar) {
       localStorage.removeItem(CHAVE_EDITAR_TERRITORIO)
       const t = territorios.find((x) => x.id === idEditar)
-      if (t?.geojson) ativarEdicaoGeometria('territorio', t.id, t.nome, t.geojson)
+      if (t?.geojson && souAdminMapa) ativarEdicaoGeometria('territorio', t.id, t.nome, t.geojson)
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [territoriosCarregados, territorios])
@@ -1536,21 +1539,23 @@ export default function Mapa() {
               </>
             )}
 
-            {/* Mover/ajustar formato e excluir quadra — só ST */}
+            {/* Excluir quadra — ST e admin. Mover/ajustar formato — só admin master */}
             {podeGerenciarQuadras && (
               <>
                 <div style={{ height: 1, background: '#EEE', margin: '12px 0' }} />
-                <button onClick={() => {
-                  if (!quadraAtiva) return
-                  ativarEdicaoGeometria('quadra', quadraAtiva.id, quadraAtiva.nome, quadraAtiva.geojson)
-                }} style={{
-                  width: '100%', padding: '13px', border: '1.5px solid #FFD9A8', borderRadius: 10,
-                  background: '#FFF6EA', color: '#B5590A', fontSize: 14, fontWeight: 600,
-                  cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
-                  marginBottom: 10,
-                }}>
-                  ↔️ Mover / ajustar formato
-                </button>
+                {souAdminMapa && (
+                  <button onClick={() => {
+                    if (!quadraAtiva) return
+                    ativarEdicaoGeometria('quadra', quadraAtiva.id, quadraAtiva.nome, quadraAtiva.geojson)
+                  }} style={{
+                    width: '100%', padding: '13px', border: '1.5px solid #FFD9A8', borderRadius: 10,
+                    background: '#FFF6EA', color: '#B5590A', fontSize: 14, fontWeight: 600,
+                    cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
+                    marginBottom: 10,
+                  }}>
+                    ↔️ Mover / ajustar formato
+                  </button>
+                )}
                 <button onClick={() => {
                   if (!quadraAtiva) return
                   if (!confirm(`Excluir a quadra "${quadraAtiva.nome}"?`)) return

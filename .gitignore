@@ -17,6 +17,7 @@
 /playwright/.auth/
 /blob-report/
 /.scratch/
+/backups/
 
 # next.js
 /.next/
