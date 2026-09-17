@@ -35,12 +35,16 @@ begin
 end
 $$;
 
-create function teste.como(usuario uuid)
+-- Simula a requisição de um usuário. O padrão é 'aal2' (passou pela
+-- verificação em 2 etapas); os testes de MFA passam 'aal1' de propósito.
+create function teste.como(usuario uuid, aal text default 'aal2')
 returns void
 language plpgsql
 as $$
 begin
   perform set_config('request.jwt.claim.sub', usuario::text, true);
+  perform set_config('request.jwt.claims',
+    json_build_object('sub', usuario::text, 'aal', aal)::text, true);
 end
 $$;
 
@@ -307,4 +311,88 @@ begin;
 select teste.como('00000000-0000-0000-0000-0000000000b1');
 set local role authenticated;
 select teste.esperar(teste.linhas($$delete from public.pontos_parada$$), 1, 'ST apaga ponto de qualquer um');
+rollback;
+
+-- -----------------------------------------------------------------------------
+-- Isolamento por congregação: usuários e grupos
+-- -----------------------------------------------------------------------------
+
+begin;
+select teste.como('00000000-0000-0000-0000-0000000000d1');
+update public.usuarios set congregacao = 'C2' where id = '00000000-0000-0000-0000-0000000000d2';
+set local role authenticated;
+select teste.esperar(teste.linhas($$select * from public.usuarios$$), 6, 'dirigente não enxerga usuário de outra congregação');
+rollback;
+
+begin;
+select teste.como('00000000-0000-0000-0000-0000000000b1');
+update public.usuarios set congregacao = 'C2' where id = '00000000-0000-0000-0000-0000000000b1';
+set local role authenticated;
+select teste.esperar(teste.linhas($$select * from public.usuarios$$), 1, 'ST de outra congregação só enxerga o próprio cadastro');
+rollback;
+
+begin;
+select teste.como('00000000-0000-0000-0000-0000000000c1');
+update public.usuarios set congregacao = 'C2' where id = '00000000-0000-0000-0000-0000000000d2';
+set local role authenticated;
+select teste.esperar(teste.linhas($$insert into public.membros_grupo (dirigente_id, sg_id) values ('00000000-0000-0000-0000-0000000000d2', '00000000-0000-0000-0000-0000000000c1')$$), -1, 'SG não põe no grupo dirigente de outra congregação');
+select teste.esperar(teste.linhas($$insert into public.membros_grupo (dirigente_id, sg_id) values ('00000000-0000-0000-0000-0000000000d1', '00000000-0000-0000-0000-0000000000c1')$$), 1, 'SG põe no grupo dirigente da própria congregação');
+select teste.esperar(teste.linhas($$insert into public.membros_grupo (dirigente_id, sg_id) values ('00000000-0000-0000-0000-0000000000d1', '00000000-0000-0000-0000-0000000000c2')$$), -1, 'SG não mexe no grupo de outro SG');
+rollback;
+
+begin;
+select teste.como('00000000-0000-0000-0000-0000000000b1');
+update public.usuarios set congregacao = 'C2' where id = '00000000-0000-0000-0000-0000000000c2';
+set local role authenticated;
+select teste.esperar(teste.linhas($$insert into public.membros_grupo (dirigente_id, sg_id) values ('00000000-0000-0000-0000-0000000000d1', '00000000-0000-0000-0000-0000000000c2')$$), -1, 'ST não mexe em grupo de SG de outra congregação');
+rollback;
+
+-- Autor não pode mover o próprio ponto para quadra de outra congregação
+begin;
+select teste.como('00000000-0000-0000-0000-0000000000d1');
+update public.territorios set congregacao = 'C2' where id = '10000000-0000-0000-0000-000000000002';
+set local role authenticated;
+select teste.esperar(teste.linhas($$update public.pontos_parada set quadra_id = '20000000-0000-0000-0000-000000000002'$$), -1, 'autor não move o ponto para quadra de outra congregação');
+rollback;
+
+-- -----------------------------------------------------------------------------
+-- Verificação em 2 etapas (MFA)
+--   'aal1' = só senha · 'aal2' = senha + código do autenticador
+-- -----------------------------------------------------------------------------
+
+begin;
+select teste.como('00000000-0000-0000-0000-0000000000a1', 'aal1');
+set local role authenticated;
+select teste.esperar(teste.linhas($$select * from public.usuarios$$), 1, 'admin sem 2 etapas só enxerga o próprio cadastro');
+select teste.esperar(teste.linhas($$select * from public.territorios$$), 0, 'admin sem 2 etapas não enxerga territórios');
+select teste.esperar(teste.linhas($$update public.territorios set nome = 'x' where numero = '1'$$), 0, 'admin sem 2 etapas não edita território');
+select teste.esperar(teste.linhas($$update public.usuarios set perfil = 'admin' where id = '00000000-0000-0000-0000-0000000000d1'$$), 0, 'admin sem 2 etapas não promove ninguém');
+rollback;
+
+begin;
+select teste.como('00000000-0000-0000-0000-0000000000a1', 'aal2');
+set local role authenticated;
+select teste.esperar(teste.linhas($$select * from public.territorios$$), 2, 'admin com 2 etapas enxerga os territórios');
+select teste.esperar(teste.linhas($$update public.territorios set nome = 'x' where numero = '1'$$), 1, 'admin com 2 etapas edita território');
+rollback;
+
+-- Dirigente não é obrigado a usar 2 etapas — mas se cadastrou, passa a precisar
+begin;
+select teste.como('00000000-0000-0000-0000-0000000000d1', 'aal1');
+set local role authenticated;
+select teste.esperar(teste.linhas($$select * from public.territorios$$), 2, 'dirigente sem autenticador cadastrado segue entrando com senha');
+rollback;
+
+begin;
+select teste.como('00000000-0000-0000-0000-0000000000d1', 'aal1');
+insert into auth.mfa_factors (user_id, status) values ('00000000-0000-0000-0000-0000000000d1', 'verified');
+set local role authenticated;
+select teste.esperar(teste.linhas($$select * from public.territorios$$), 0, 'quem cadastrou autenticador precisa do código, mesmo sendo dirigente');
+rollback;
+
+begin;
+select teste.como('00000000-0000-0000-0000-0000000000d1', 'aal1');
+insert into auth.mfa_factors (user_id, status) values ('00000000-0000-0000-0000-0000000000d1', 'unverified');
+set local role authenticated;
+select teste.esperar(teste.linhas($$select * from public.territorios$$), 2, 'cadastro de autenticador só passa a valer depois de confirmado');
 rollback;

@@ -2,8 +2,9 @@
 
 import { Suspense, useState } from 'react'
 import { useSearchParams } from 'next/navigation'
-import { createBrowserClient } from '@supabase/ssr'
 import Image from 'next/image'
+import { supabase } from '@/lib/supabase'
+import { verificarCodigoLogin } from '@/lib/mfa'
 
 export default function LoginPage() {
   return (
@@ -25,16 +26,15 @@ function LoginForm() {
     return ''
   })
   const [carregando, setCarregando] = useState(false)
+  // Contas com verificação em 2 etapas passam por um segundo passo: o código
+  // de 6 dígitos do app autenticador.
+  const [pedindoCodigo, setPedindoCodigo] = useState(false)
+  const [codigo, setCodigo] = useState('')
 
   async function handleLogin(e: React.FormEvent) {
     e.preventDefault()
     setErro('')
     setCarregando(true)
-
-    const supabase = createBrowserClient(
-      process.env.NEXT_PUBLIC_SUPABASE_URL!,
-      process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
-    )
 
     const { data, error } = await supabase.auth.signInWithPassword({ email, password: senha })
 
@@ -53,8 +53,38 @@ function LoginForm() {
       return
     }
 
+    const { data: nivel } = await supabase.auth.mfa.getAuthenticatorAssuranceLevel()
+    if (nivel?.nextLevel === 'aal2' && nivel.currentLevel !== 'aal2') {
+      setSenha('')
+      setPedindoCodigo(true)
+      setCarregando(false)
+      return
+    }
+
     // Hard redirect garante que cookies são lidos frescos pelo middleware
     window.location.href = '/app'
+  }
+
+  async function handleCodigo(e: React.FormEvent) {
+    e.preventDefault()
+    setErro('')
+    setCarregando(true)
+    try {
+      await verificarCodigoLogin(codigo)
+      window.location.href = '/app'
+    } catch {
+      setErro('Código inválido ou expirado. Tente o código atual do app autenticador.')
+      setCodigo('')
+      setCarregando(false)
+    }
+  }
+
+  async function cancelarCodigo() {
+    await supabase.auth.signOut()
+    setPedindoCodigo(false)
+    setCodigo('')
+    setSenha('')
+    setErro('')
   }
 
   return (
@@ -97,9 +127,71 @@ function LoginForm() {
         padding: '32px 28px',
       }}>
         <h2 style={{ fontSize: 18, fontWeight: 600, color: '#1A1A1A', margin: '0 0 24px' }}>
-          Entrar
+          {pedindoCodigo ? 'Verificação em 2 etapas' : 'Entrar'}
         </h2>
 
+        {pedindoCodigo ? (
+          <form onSubmit={(e) => void handleCodigo(e)} style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+            <p style={{ fontSize: 14, color: '#666', margin: 0 }}>
+              Digite o código de 6 dígitos do seu app autenticador.
+            </p>
+
+            <input
+              type="text"
+              value={codigo}
+              onChange={(e) => setCodigo(e.target.value.replace(/\D/g, '').slice(0, 6))}
+              placeholder="000000"
+              required
+              autoFocus
+              inputMode="numeric"
+              autoComplete="one-time-code"
+              style={{
+                padding: '13px 14px', fontSize: 24, fontWeight: 700,
+                letterSpacing: 8, textAlign: 'center',
+                border: '1px solid #DDDDDD', borderRadius: 10,
+                background: '#FAFAFA', color: '#1A1A1A',
+                outline: 'none', width: '100%',
+                boxSizing: 'border-box',
+              }}
+            />
+
+            {erro && (
+              <div style={{
+                background: '#FFF0F0', border: '1px solid #E05050',
+                borderRadius: 10, padding: '10px 14px',
+                color: '#501313', fontSize: 14,
+              }}>
+                {erro}
+              </div>
+            )}
+
+            <button
+              type="submit"
+              disabled={carregando || codigo.length < 6}
+              style={{
+                marginTop: 6, padding: '15px',
+                fontSize: 16, fontWeight: 600,
+                background: carregando || codigo.length < 6 ? '#AAAAAA' : '#3BAD68',
+                color: '#FFFFFF', border: 'none', borderRadius: 10,
+                cursor: carregando ? 'not-allowed' : 'pointer',
+                minHeight: 52, transition: 'background 0.2s',
+              }}
+            >
+              {carregando ? 'Verificando…' : 'Confirmar'}
+            </button>
+
+            <button
+              type="button"
+              onClick={() => void cancelarCodigo()}
+              style={{
+                background: 'none', border: 'none', color: '#888',
+                fontSize: 14, cursor: 'pointer', padding: 4,
+              }}
+            >
+              Entrar com outra conta
+            </button>
+          </form>
+        ) : (
         <form onSubmit={(e) => void handleLogin(e)} style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
 
           <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
@@ -168,6 +260,7 @@ function LoginForm() {
             {carregando ? 'Entrando…' : 'Entrar'}
           </button>
         </form>
+        )}
       </div>
 
       <p style={{ marginTop: 24, fontSize: 13, color: '#AAAAAA', textAlign: 'center' }}>

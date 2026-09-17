@@ -4,6 +4,7 @@ import { useRouter, usePathname } from 'next/navigation'
 import Link from 'next/link'
 import { supabase, CORES_PERFIL, type Usuario } from '@/lib/supabase'
 import { logout } from '@/lib/auth'
+import { situacaoMfa } from '@/lib/mfa'
 import React from 'react'
 // ─── Ícones SVG minimalistas (stroke only) ────────────────────────────────────
 
@@ -213,6 +214,19 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
         await logout()
         router.push('/login?desativado=1')
         return
+      }
+
+      // Verificação em 2 etapas: quem é obrigado e ainda não cadastrou o app
+      // autenticador — ou cadastrou e ainda não digitou o código nesta sessão
+      // — só acessa a tela de Segurança. O banco também barra (ver a migration
+      // 20260917130000); aqui é só pra não mostrar tela vazia.
+      if (!pathname.startsWith('/app/seguranca')) {
+        const { precisaCodigo, precisaCadastrar } = await situacaoMfa(data.perfil)
+        if (precisaCodigo || precisaCadastrar) {
+          setUsuario(data)
+          router.push('/app/seguranca')
+          return
+        }
       }
 
       const ROTAS_RESTRITAS: { prefixo: string; perfis: string[] }[] = [

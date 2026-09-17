@@ -1,6 +1,8 @@
 'use client'
 import { useEffect, useState } from 'react'
+import Link from 'next/link'
 import { supabase, CORES_PERFIL, type Usuario } from '@/lib/supabase'
+import { mfaObrigatoria } from '@/lib/mfa'
 import BotaoSalvarOffline from '@/components/BotaoSalvarOffline'
 
 export default function PerfilPage() {
@@ -55,6 +57,17 @@ export default function PerfilPage() {
       </div>
 
       <BotaoSalvarOffline />
+
+      <div className="card" style={{ marginBottom: 24 }}>
+        <h2 style={{ fontSize: 20, fontWeight: 700, marginBottom: 8 }}>🔐 Verificação em 2 etapas</h2>
+        <p style={{ fontSize: 14, color: '#666', marginBottom: 14 }}>
+          Pede um código do app autenticador na hora de entrar, além da senha.
+          {mfaObrigatoria(usuario.perfil) ? ' Obrigatória para administradores.' : ' Opcional, mas recomendada.'}
+        </p>
+        <Link href="/app/seguranca" className="btn-grande btn-azul" style={{ display: 'block', textAlign: 'center', textDecoration: 'none' }}>
+          Gerenciar 2 etapas
+        </Link>
+      </div>
 
       <div className="card">
         <h2 style={{ fontSize: 20, fontWeight: 700, marginBottom: 16 }}>🔒 Trocar senha</h2>

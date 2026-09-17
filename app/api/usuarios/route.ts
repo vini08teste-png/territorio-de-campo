@@ -21,7 +21,23 @@ function criarClienteAdmin() {
 type Gestor = { perfil: 'admin' | 'superintendente_territorio'; id: string; congregacao: string | null }
 
 const PERFIS = ['admin', 'superintendente_territorio', 'superintendente_grupo', 'dirigente']
-const SENHA_MINIMA = 8
+const SENHA_MINIMA = 6
+// Perfis obrigados a passar pela verificação em 2 etapas (mesma regra da
+// migration 20260917130000). Aqui a checagem tem que ser explícita: esta rota
+// usa a service role, que passa por cima da RLS.
+const PERFIS_COM_MFA_OBRIGATORIA = ['admin']
+
+/** Nível de autenticação do token: 'aal2' = passou pelo código do autenticador. */
+function nivelDoToken(token: string): string {
+  try {
+    const payload = token.split('.')[1]
+    if (!payload) return 'aal1'
+    const json = Buffer.from(payload.replace(/-/g, '+').replace(/_/g, '/'), 'base64').toString('utf8')
+    return (JSON.parse(json) as { aal?: string }).aal || 'aal1'
+  } catch {
+    return 'aal1'
+  }
+}
 
 async function exigirGestor(req: NextRequest, supabaseAdmin: SupabaseClient): Promise<Gestor | null> {
   const cabecalho = req.headers.get('authorization') ?? ''
@@ -40,6 +56,16 @@ async function exigirGestor(req: NextRequest, supabaseAdmin: SupabaseClient): Pr
 
   if (!usuario?.ativo) return null
   if (usuario.perfil !== 'admin' && usuario.perfil !== 'superintendente_territorio') return null
+
+  const aal = nivelDoToken(token)
+  // Quem é obrigado a usar 2 etapas, ou já cadastrou autenticador, precisa
+  // estar com a sessão verificada para gerenciar usuários.
+  if (aal !== 'aal2') {
+    if (PERFIS_COM_MFA_OBRIGATORIA.includes(usuario.perfil)) return null
+    const { data: fatores } = await supabaseAdmin.auth.admin.mfa.listFactors({ userId: user.id })
+    if (fatores?.factors?.some((f) => f.status === 'verified')) return null
+  }
+
   return { perfil: usuario.perfil, id: user.id, congregacao: usuario.congregacao ?? null }
 }
 
