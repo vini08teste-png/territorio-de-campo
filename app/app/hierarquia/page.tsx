@@ -92,7 +92,7 @@ function Galho({ children, cor = '#EEEEEE' }: { children: React.ReactNode; cor?:
 }
 
 export default function HierarquiaPage() {
-  const { carregando: verificandoAcesso, autorizado } = usePaginaRestrita(['admin', 'superintendente_territorio'])
+  const { carregando: verificandoAcesso, autorizado } = usePaginaRestrita(['admin'])
   const [carregando, setCarregando] = useState(true)
   const [usuarios, setUsuarios] = useState<UsuarioLinha[]>([])
   const [territorios, setTerritorios] = useState<TerritorioLinha[]>([])

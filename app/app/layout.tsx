@@ -232,7 +232,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
       const ROTAS_RESTRITAS: { prefixo: string; perfis: string[] }[] = [
         { prefixo: '/app/usuarios', perfis: ['admin', 'superintendente_territorio'] },
         { prefixo: '/app/configuracoes', perfis: ['admin'] },
-        { prefixo: '/app/hierarquia', perfis: ['admin', 'superintendente_territorio'] },
+        { prefixo: '/app/hierarquia', perfis: ['admin'] },
         { prefixo: '/app/logs', perfis: ['admin', 'superintendente_territorio'] },
       ]
       const rotaRestrita = ROTAS_RESTRITAS.find((r) => pathname.startsWith(r.prefixo))
@@ -460,7 +460,8 @@ const ITEM_PERFIL: NavItem = { href: '/app/perfil', iconeKey: 'perfil', label: '
 
 const NAV_DIRIGENTE: NavItem[] = [ITEM_MAPA, ITEM_HISTORICO, ITEM_PERFIL]
 const NAV_SG: NavItem[] = [ITEM_MAPA, ITEM_PROGRESSO, ITEM_DESIGNAR, ITEM_VALIDAR, ITEM_HISTORICO, ITEM_PERFIL]
-const NAV_ST: NavItem[] = [ITEM_USUARIOS, ITEM_NOVO_USUARIO, ITEM_HIERARQUIA, ITEM_MAPA, ITEM_TERRITORIOS, ITEM_DESIGNAR, ITEM_VALIDAR, ITEM_ANALISE, ITEM_PROGRESSO, ITEM_LOGS, ITEM_HISTORICO, ITEM_PERFIL]
+// Hierarquia é só do admin — o ST não tem esse item.
+const NAV_ST: NavItem[] = [ITEM_USUARIOS, ITEM_NOVO_USUARIO, ITEM_MAPA, ITEM_TERRITORIOS, ITEM_DESIGNAR, ITEM_VALIDAR, ITEM_ANALISE, ITEM_PROGRESSO, ITEM_LOGS, ITEM_HISTORICO, ITEM_PERFIL]
 const NAV_ADMIN: NavItem[] = [
   ITEM_USUARIOS, ITEM_NOVO_USUARIO, ITEM_HIERARQUIA, ITEM_CONFIG,
   ITEM_MAPA, ITEM_TERRITORIOS, ITEM_DESIGNAR, ITEM_VALIDAR, ITEM_ANALISE, ITEM_PROGRESSO, ITEM_LOGS, ITEM_HISTORICO, ITEM_PERFIL,
