@@ -25,7 +25,7 @@ const PERFIS: { value: Perfil; label: string }[] = [
 ]
 
 export default function UsuariosPage() {
-  const { carregando: verificandoAcesso, autorizado } = usePaginaRestrita(['admin'])
+  const { usuario: eu, carregando: verificandoAcesso, autorizado } = usePaginaRestrita(['admin', 'superintendente_territorio'])
   const [usuarios, setUsuarios] = useState<UsuarioComCongregacao[]>([])
   const [carregando, setCarregando] = useState(true)
   const [busca, setBusca] = useState('')
@@ -77,13 +77,14 @@ export default function UsuariosPage() {
   }
 
   async function toggleAtivo(id: string, ativo: boolean) {
-    const { error } = await supabase
-      .from('usuarios')
-      .update({ ativo: !ativo })
-      .eq('id', id)
-
-    if (error) {
-      mostrarErro('Erro ao alterar status do usuário.')
+    const res = await fetch('/api/usuarios', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${await getAccessToken()}` },
+      body: JSON.stringify({ id, ativo: !ativo }),
+    })
+    const resposta = (await res.json()) as { error?: string }
+    if (!res.ok || resposta.error) {
+      mostrarErro(resposta.error ?? 'Erro ao alterar status do usuário.')
       return
     }
 
@@ -169,6 +170,7 @@ export default function UsuariosPage() {
           email: novoEmail.trim(),
           perfil: novoPerfil,
           senha: novaSenha || undefined,
+          congregacao: novaCongregacao.trim(),
         }),
       })
 
@@ -176,16 +178,6 @@ export default function UsuariosPage() {
 
       if (!res.ok || data.error) {
         mostrarErro(data.error ?? 'Erro ao salvar edição.')
-        return
-      }
-
-      const { error } = await supabase
-        .from('usuarios')
-        .update({ congregacao: novaCongregacao.trim() })
-        .eq('id', editando.id)
-
-      if (error) {
-        mostrarErro('Dados salvos, mas houve erro ao salvar a congregação.')
         return
       }
 
@@ -565,7 +557,7 @@ export default function UsuariosPage() {
                 </div>
 
                 {/* Ações sempre ficam embaixo no card para não estourar no celular */}
-                <div className="usuario-actions">
+                {(eu?.perfil === 'admin' || u.perfil !== 'admin') && <div className="usuario-actions">
                   <button
                     onClick={() => abrirEdicao(u)}
                     className="btn-editar"
@@ -597,7 +589,7 @@ export default function UsuariosPage() {
                   >
                     {excluindo === u.id ? '…' : '🗑️'}
                   </button>
-                </div>
+                </div>}
               </div>
             )
           })}
@@ -777,7 +769,7 @@ export default function UsuariosPage() {
                 flexDirection: 'column',
                 gap: 8,
               }}>
-                {PERFIS.map((p) => {
+                {PERFIS.filter((p) => eu?.perfil === 'admin' || p.value !== 'admin').map((p) => {
                   const selecionado = novoPerfil === p.value
                   const cores = CORES_PERFIL[p.value]
 

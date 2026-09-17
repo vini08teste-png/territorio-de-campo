@@ -8,7 +8,7 @@ import { usePaginaRestrita } from '@/lib/permissoes'
 import { Carregando, SemPermissao } from '@/components/EstadoPagina'
 
 export default function NovoUsuarioPage() {
-  const { carregando: verificandoAcesso, autorizado } = usePaginaRestrita(['admin'])
+  const { usuario: eu, carregando: verificandoAcesso, autorizado } = usePaginaRestrita(['admin', 'superintendente_territorio'])
   const router = useRouter()
   const [form, setForm] = useState({ nome: '', email: '', senha: '', perfil: 'dirigente' as Perfil })
   const [salvando, setSalvando] = useState(false)
@@ -80,7 +80,7 @@ export default function NovoUsuarioPage() {
               background: '#FAFAFA', color: '#1A1A1A', outline: 'none',
             }}
           >
-            {Object.entries(CORES_PERFIL).map(([k, v]) => (
+            {Object.entries(CORES_PERFIL).filter(([k]) => eu?.perfil === 'admin' || k !== 'admin').map(([k, v]) => (
               <option key={k} value={k}>{v.label}</option>
             ))}
           </select>

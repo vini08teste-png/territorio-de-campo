@@ -60,6 +60,17 @@ async function atualizarFatia(fatia: Partial<DadosOffline>): Promise<void> {
   await salvarTudo({ ...atual, ...fatia })
 }
 
+/** Chamado no logout: o próximo usuário do aparelho não pode ver, offline, os
+    territórios/pontos baixados pelo anterior. (A fila de envio pendente fica —
+    ela só sincroniza com a sessão de quem a criou, por causa da RLS.) */
+export async function apagarDadosOffline(): Promise<void> {
+  if (typeof indexedDB === 'undefined') return
+  await new Promise<void>((resolve) => {
+    const req = indexedDB.deleteDatabase(DB_NOME)
+    req.onsuccess = req.onerror = req.onblocked = () => resolve()
+  })
+}
+
 function online(): boolean {
   return typeof navigator === 'undefined' || navigator.onLine
 }

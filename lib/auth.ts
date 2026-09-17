@@ -1,5 +1,6 @@
 import { supabase } from './supabase'
 import { limparCacheDados } from './swClient'
+import { apagarDadosOffline } from './offline/dadosOffline'
 
 export async function login(email: string, senha: string) {
   const { data, error } = await supabase.auth.signInWithPassword({ email, password: senha })
@@ -10,6 +11,7 @@ export async function login(email: string, senha: string) {
 export async function logout() {
   await supabase.auth.signOut()
   limparCacheDados()
+  await apagarDadosOffline().catch(() => {})
 }
 
 export async function getUsuarioAtual() {

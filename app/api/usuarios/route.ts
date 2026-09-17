@@ -13,42 +13,112 @@ function criarClienteAdmin() {
   return createClient(url, chave, { auth: { autoRefreshToken: false, persistSession: false } })
 }
 
-// Só deixa passar quem está autenticado e tem perfil admin
-async function exigirAdmin(req: NextRequest, supabaseAdmin: SupabaseClient) {
-  const token = req.headers.get('authorization')?.replace('Bearer ', '')
-  if (!token) return false
+// Quem pode gerenciar usuários: admin e superintendente de território. O ST
+// só mexe em quem é da congregação dele, nunca em admin — e não pode promover
+// ninguém a admin nem mudar alguém (ou a si mesmo) de congregação. Sem isso,
+// um ST trocava a própria congregação e passava a ver os dados de outra, ou
+// redefinia a senha de alguém de outra congregação e entrava na conta.
+type Gestor = { perfil: 'admin' | 'superintendente_territorio'; id: string; congregacao: string | null }
+
+const PERFIS = ['admin', 'superintendente_territorio', 'superintendente_grupo', 'dirigente']
+const SENHA_MINIMA = 8
+
+async function exigirGestor(req: NextRequest, supabaseAdmin: SupabaseClient): Promise<Gestor | null> {
+  const cabecalho = req.headers.get('authorization') ?? ''
+  if (!cabecalho.startsWith('Bearer ')) return null
+  const token = cabecalho.slice('Bearer '.length).trim()
+  if (!token) return null
 
   const { data: { user } } = await supabaseAdmin.auth.getUser(token)
-  if (!user) return false
+  if (!user) return null
 
   const { data: usuario } = await supabaseAdmin
     .from('usuarios')
-    .select('perfil, ativo')
+    .select('perfil, ativo, congregacao')
     .eq('id', user.id)
     .single()
 
-  return usuario?.perfil === 'admin' && usuario.ativo
+  if (!usuario?.ativo) return null
+  if (usuario.perfil !== 'admin' && usuario.perfil !== 'superintendente_territorio') return null
+  return { perfil: usuario.perfil, id: user.id, congregacao: usuario.congregacao ?? null }
+}
+
+const SEM_PERMISSAO = { error: 'Acesso restrito a administradores e superintendentes de território.' }
+const NAO_MEXE_EM_ADMIN = { error: 'Só um administrador pode criar, editar ou excluir outro administrador.' }
+const OUTRA_CONGREGACAO = { error: 'Você só pode gerenciar usuários da sua congregação.' }
+
+function normalizar(congregacao: string | null | undefined) {
+  return (congregacao ?? '').trim().toLowerCase()
+}
+
+/** ST só atua dentro da própria congregação (e precisa ter uma definida). */
+function stDaCongregacao(gestor: Gestor, congregacao: string | null | undefined) {
+  if (gestor.perfil === 'admin') return true
+  return normalizar(gestor.congregacao) !== '' && normalizar(gestor.congregacao) === normalizar(congregacao)
+}
+
+/** ST não cria nem promove admin. */
+function stPodeUsarPerfil(gestor: Gestor, perfil?: string) {
+  return gestor.perfil === 'admin' || perfil !== 'admin'
+}
+
+async function buscarAlvo(supabaseAdmin: SupabaseClient, id: string) {
+  const { data } = await supabaseAdmin.from('usuarios').select('perfil, congregacao').eq('id', id).single()
+  return data as { perfil: string; congregacao: string | null } | null
+}
+
+/** Devolve a resposta de erro se o gestor não pode mexer nesse usuário. */
+async function barrarAlvo(supabaseAdmin: SupabaseClient, gestor: Gestor, id: string) {
+  const alvo = await buscarAlvo(supabaseAdmin, id)
+  if (!alvo) return NextResponse.json({ error: 'Usuário não encontrado.' }, { status: 404 })
+  if (gestor.perfil === 'admin') return null
+  if (alvo.perfil === 'admin') return NextResponse.json(NAO_MEXE_EM_ADMIN, { status: 403 })
+  if (!stDaCongregacao(gestor, alvo.congregacao)) return NextResponse.json(OUTRA_CONGREGACAO, { status: 403 })
+  return null
+}
+
+function textoValido(valor: unknown, maximo = 200): valor is string {
+  return typeof valor === 'string' && valor.trim() !== '' && valor.length <= maximo
 }
 
 // POST /api/usuarios — criar usuário
 export async function POST(req: NextRequest) {
   try {
     const supabaseAdmin = criarClienteAdmin()
-    if (!(await exigirAdmin(req, supabaseAdmin))) {
-      return NextResponse.json({ error: 'Acesso restrito a administradores.' }, { status: 403 })
+    const gestor = await exigirGestor(req, supabaseAdmin)
+    if (!gestor) return NextResponse.json(SEM_PERMISSAO, { status: 403 })
+
+    const { nome, email, senha, perfil, congregacao } = await req.json() as {
+      nome: unknown; email: unknown; senha: unknown; perfil: unknown; congregacao?: unknown
     }
 
-    const { nome, email, senha, perfil } = await req.json() as {
-      nome: string; email: string; senha: string; perfil: string
-    }
-
-    if (!nome || !email || !senha || !perfil) {
+    if (!textoValido(nome) || !textoValido(email) || typeof senha !== 'string' || typeof perfil !== 'string') {
       return NextResponse.json({ error: 'Campos obrigatórios faltando.' }, { status: 400 })
+    }
+    if (!PERFIS.includes(perfil)) {
+      return NextResponse.json({ error: 'Perfil inválido.' }, { status: 400 })
+    }
+    if (senha.length < SENHA_MINIMA) {
+      return NextResponse.json({ error: `Senha deve ter no mínimo ${SENHA_MINIMA} caracteres.` }, { status: 400 })
+    }
+    if (!stPodeUsarPerfil(gestor, perfil)) {
+      return NextResponse.json(NAO_MEXE_EM_ADMIN, { status: 403 })
+    }
+
+    // ST sempre cria dentro da própria congregação; admin pode escolher.
+    let congregacaoNova: string | null = null
+    if (gestor.perfil === 'admin') {
+      if (typeof congregacao === 'string' && congregacao.trim()) congregacaoNova = congregacao.trim()
+    } else {
+      if (!gestor.congregacao?.trim()) {
+        return NextResponse.json({ error: 'Sua conta não tem congregação definida. Peça a um administrador.' }, { status: 403 })
+      }
+      congregacaoNova = gestor.congregacao
     }
 
     // Cria no Auth sem exigir confirmação de email
     const { data, error: authError } = await supabaseAdmin.auth.admin.createUser({
-      email,
+      email: email.trim(),
       password: senha,
       email_confirm: true, // confirma automaticamente — não precisa clicar no email
     })
@@ -64,16 +134,17 @@ export async function POST(req: NextRequest) {
     // Insere na tabela usuarios
     const { error: insertError } = await supabaseAdmin.from('usuarios').insert({
       id: data.user.id,
-      nome,
-      email,
+      nome: nome.trim(),
+      email: email.trim(),
       perfil,
+      congregacao: congregacaoNova,
       ativo: true,
     })
 
     if (insertError) {
       // Rollback: remove do auth se falhou na tabela
       await supabaseAdmin.auth.admin.deleteUser(data.user.id)
-      return NextResponse.json({ error: insertError.message }, { status: 500 })
+      return NextResponse.json({ error: 'Não foi possível salvar o usuário.' }, { status: 500 })
     }
 
     return NextResponse.json({ ok: true })
@@ -86,25 +157,55 @@ export async function POST(req: NextRequest) {
 export async function PATCH(req: NextRequest) {
   try {
     const supabaseAdmin = criarClienteAdmin()
-    if (!(await exigirAdmin(req, supabaseAdmin))) {
-      return NextResponse.json({ error: 'Acesso restrito a administradores.' }, { status: 403 })
+    const gestor = await exigirGestor(req, supabaseAdmin)
+    if (!gestor) return NextResponse.json(SEM_PERMISSAO, { status: 403 })
+
+    const { id, nome, email, perfil, senha, ativo, congregacao } = await req.json() as {
+      id: unknown; nome?: unknown; email?: unknown; perfil?: unknown; senha?: unknown
+      ativo?: unknown; congregacao?: unknown
     }
 
-    const { id, nome, email, perfil, senha } = await req.json() as {
-      id: string; nome?: string; email?: string; perfil?: string; senha?: string
+    if (typeof id !== 'string' || !id) return NextResponse.json({ error: 'ID obrigatório.' }, { status: 400 })
+
+    // Valida tudo antes de gravar qualquer coisa, pra não ficar meio atualizado.
+    if (perfil !== undefined && perfil !== '' && (typeof perfil !== 'string' || !PERFIS.includes(perfil))) {
+      return NextResponse.json({ error: 'Perfil inválido.' }, { status: 400 })
+    }
+    if (nome !== undefined && nome !== '' && !textoValido(nome)) {
+      return NextResponse.json({ error: 'Nome inválido.' }, { status: 400 })
+    }
+    if (email !== undefined && email !== '' && !textoValido(email)) {
+      return NextResponse.json({ error: 'Email inválido.' }, { status: 400 })
+    }
+    if (senha !== undefined && senha !== '' && (typeof senha !== 'string' || senha.length < SENHA_MINIMA)) {
+      return NextResponse.json({ error: `Senha deve ter no mínimo ${SENHA_MINIMA} caracteres.` }, { status: 400 })
+    }
+    if (congregacao !== undefined && typeof congregacao !== 'string') {
+      return NextResponse.json({ error: 'Congregação inválida.' }, { status: 400 })
+    }
+    if (ativo !== undefined && typeof ativo !== 'boolean') {
+      return NextResponse.json({ error: 'Valor de "ativo" inválido.' }, { status: 400 })
     }
 
-    if (!id) return NextResponse.json({ error: 'ID obrigatório.' }, { status: 400 })
-
-    if (senha && senha.length < 6) {
-      return NextResponse.json({ error: 'Senha deve ter no mínimo 6 caracteres.' }, { status: 400 })
+    if (!stPodeUsarPerfil(gestor, perfil as string | undefined)) {
+      return NextResponse.json(NAO_MEXE_EM_ADMIN, { status: 403 })
+    }
+    const barrado = await barrarAlvo(supabaseAdmin, gestor, id)
+    if (barrado) return barrado
+    if (typeof congregacao === 'string' && !stDaCongregacao(gestor, congregacao)) {
+      return NextResponse.json(OUTRA_CONGREGACAO, { status: 403 })
+    }
+    if (ativo === false && id === gestor.id) {
+      return NextResponse.json({ error: 'Você não pode desativar a própria conta.' }, { status: 400 })
     }
 
-    // Atualiza email e/ou senha no Auth, se enviados
-    if (email || senha) {
-      const authUpdate: { email?: string; password?: string } = {}
-      if (email) authUpdate.email = email
-      if (senha) authUpdate.password = senha
+    // Atualiza email, senha e bloqueio de login no Auth, se enviados. Conta
+    // desativada fica banida no Auth: não loga nem renova o token.
+    if (email || senha || typeof ativo === 'boolean') {
+      const authUpdate: { email?: string; password?: string; ban_duration?: string } = {}
+      if (email) authUpdate.email = (email as string).trim()
+      if (senha) authUpdate.password = senha as string
+      if (typeof ativo === 'boolean') authUpdate.ban_duration = ativo ? 'none' : '876000h'
 
       const { error: authError } = await supabaseAdmin.auth.admin.updateUserById(id, authUpdate)
       if (authError) {
@@ -113,10 +214,12 @@ export async function PATCH(req: NextRequest) {
     }
 
     // Atualiza dados na tabela usuarios
-    const dadosTabela: { nome?: string; email?: string; perfil?: string } = {}
-    if (nome) dadosTabela.nome = nome
-    if (email) dadosTabela.email = email
-    if (perfil) dadosTabela.perfil = perfil
+    const dadosTabela: { nome?: string; email?: string; perfil?: string; ativo?: boolean; congregacao?: string } = {}
+    if (nome) dadosTabela.nome = (nome as string).trim()
+    if (email) dadosTabela.email = (email as string).trim()
+    if (perfil) dadosTabela.perfil = perfil as string
+    if (typeof ativo === 'boolean') dadosTabela.ativo = ativo
+    if (typeof congregacao === 'string') dadosTabela.congregacao = congregacao.trim()
 
     if (Object.keys(dadosTabela).length > 0) {
       const { error: updateError } = await supabaseAdmin
@@ -125,7 +228,7 @@ export async function PATCH(req: NextRequest) {
         .eq('id', id)
 
       if (updateError) {
-        return NextResponse.json({ error: updateError.message }, { status: 500 })
+        return NextResponse.json({ error: 'Não foi possível salvar as alterações.' }, { status: 500 })
       }
     }
 
@@ -139,12 +242,17 @@ export async function PATCH(req: NextRequest) {
 export async function DELETE(req: NextRequest) {
   try {
     const supabaseAdmin = criarClienteAdmin()
-    if (!(await exigirAdmin(req, supabaseAdmin))) {
-      return NextResponse.json({ error: 'Acesso restrito a administradores.' }, { status: 403 })
-    }
+    const gestor = await exigirGestor(req, supabaseAdmin)
+    if (!gestor) return NextResponse.json(SEM_PERMISSAO, { status: 403 })
 
     const id = req.nextUrl.searchParams.get('id')
     if (!id) return NextResponse.json({ error: 'ID obrigatório.' }, { status: 400 })
+
+    if (id === gestor.id) {
+      return NextResponse.json({ error: 'Você não pode excluir a própria conta.' }, { status: 400 })
+    }
+    const barrado = await barrarAlvo(supabaseAdmin, gestor, id)
+    if (barrado) return barrado
 
     // O banco bloqueia a exclusão se essa pessoa já tem histórico vinculado
     // (marcações, pontos de parada, territórios criados ou validações feitas).

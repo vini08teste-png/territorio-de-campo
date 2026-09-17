@@ -238,7 +238,7 @@ test('caminho completo do território, com a consulta simulada', async () => {
   assert.equal(resultado.quadras.length, 4)
   assert.equal(resultado.ruasEncontradas, 6)
   assert.ok(caixaConsultada, 'a consulta precisa receber a caixa do contorno')
-  assert.ok(caixaConsultada!.sul < LAT, 'a caixa precisa ter margem além do contorno')
+  assert.ok((caixaConsultada as { sul: number } | null)!.sul < LAT, 'a caixa precisa ter margem além do contorno')
 })
 
 test('território sem ruas no OSM não gera quadra nenhuma', async () => {
