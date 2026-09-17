@@ -1520,14 +1520,29 @@ export default function Mapa() {
               // eslint-disable-next-line @next/next/no-img-element
               <img src={pontoFoto} alt="Foto do ponto" style={{ width: '100%', maxHeight: 160, objectFit: 'cover', borderRadius: 10, marginBottom: 8, display: 'block' }} />
             )}
-            <label style={{
-              display: 'inline-block', padding: '10px 14px', fontSize: 13, fontWeight: 600,
-              background: '#F7F7F7', color: '#1A1A1A', border: '1px solid #DDD', borderRadius: 8, cursor: 'pointer',
-            }}>
-              {enviandoFotoPonto ? 'Enviando…' : pontoFoto ? '🔁 Trocar foto' : '📷 Adicionar foto'}
-              <input type="file" accept="image/png,image/jpeg,image/webp" hidden
-                disabled={enviandoFotoPonto} onChange={(e) => void enviarFotoPonto(e)} />
-            </label>
+            {enviandoFotoPonto ? (
+              <div style={{ fontSize: 13, fontWeight: 600, color: '#888', padding: '10px 0' }}>Enviando…</div>
+            ) : (
+              <div style={{ display: 'flex', gap: 8 }}>
+                {/* capture="environment" abre a câmera traseira direto pra tirar na hora */}
+                <label style={{
+                  flex: 1, textAlign: 'center', padding: '11px 14px', fontSize: 13, fontWeight: 600,
+                  background: '#3BAD68', color: '#fff', border: 'none', borderRadius: 8, cursor: 'pointer',
+                }}>
+                  📷 {pontoFoto ? 'Tirar outra' : 'Tirar foto'}
+                  <input type="file" accept="image/*" capture="environment" hidden
+                    onChange={(e) => void enviarFotoPonto(e)} />
+                </label>
+                <label style={{
+                  flex: 1, textAlign: 'center', padding: '11px 14px', fontSize: 13, fontWeight: 600,
+                  background: '#F7F7F7', color: '#1A1A1A', border: '1px solid #DDD', borderRadius: 8, cursor: 'pointer',
+                }}>
+                  🖼️ Galeria
+                  <input type="file" accept="image/png,image/jpeg,image/webp" hidden
+                    onChange={(e) => void enviarFotoPonto(e)} />
+                </label>
+              </div>
+            )}
 
             <div style={{ display: 'flex', gap: 10, marginTop: 14 }}>
               <button onClick={() => setModalPonto(false)}
