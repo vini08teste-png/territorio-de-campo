@@ -314,7 +314,16 @@ export default function UsuariosPage() {
 
   const termo = busca.trim().toLowerCase()
 
-  const filtrados = usuarios.filter((u) =>
+  // Só o admin vê gente de outras congregações. Para o ST, a lista fica na
+  // própria congregação — a mesma regra que a RLS aplica no banco (migration
+  // 20260917120000); aqui é a segunda barreira, pra tela não mostrar o que ele
+  // não pode gerenciar.
+  const minhaCongregacao = (eu?.congregacao ?? '').trim().toLowerCase()
+  const visiveis = eu?.perfil === 'admin'
+    ? usuarios
+    : usuarios.filter((u) => (u.congregacao ?? '').trim().toLowerCase() === minhaCongregacao)
+
+  const filtrados = visiveis.filter((u) =>
     u.nome.toLowerCase().includes(termo) ||
     u.email.toLowerCase().includes(termo) ||
     (u.congregacao ?? '').toLowerCase().includes(termo)

@@ -9,60 +9,46 @@ npm install
 npm run dev
 ```
 
-Abra [http://localhost:3000](http://localhost:3000). Precisa de um projeto Supabase com as migrations aplicadas e do `.env.local` configurado. O passo a passo completo está em [COMO_RODAR.md](COMO_RODAR.md).
+Abra [http://localhost:3000](http://localhost:3000). Precisa de um projeto Supabase com as migrations aplicadas e do `.env.local` configurado. O passo a passo completo está em [docs/COMO_RODAR.md](docs/COMO_RODAR.md).
 
 ## Estrutura do projeto
 
 ```
-app/
-  layout.tsx            → layout raiz (carrega Leaflet/CSS globais)
-  page.tsx               → redirecionamento inicial
-  login/page.tsx          → tela de login
-  api/usuarios/route.ts    → API para criar/gerenciar usuários (server-side)
+app/                          Rotas (Next.js App Router)
+├── login/                    Tela de login
+├── api/usuarios/             API server-side de usuários (service role)
+└── app/                      Área logada
+    ├── layout.tsx            Cabeçalho + menu por perfil
+    ├── page.tsx              Mapa
+    ├── territorios/          Territórios, cartão para impressão, importação do PDF
+    ├── designar/             Designações
+    ├── validar/              Validação de marcações
+    ├── meu-territorio/       Visão do dirigente
+    ├── progresso/ analise/ relatorio/ historico/ logs/
+    ├── usuarios/ hierarquia/ Gestão de pessoas (admin e ST)
+    ├── configuracoes/        Configurações gerais (admin)
+    └── perfil/ seguranca/    Conta do usuário logado
 
-  app/                    → tudo que fica DENTRO do sistema logado
-    layout.tsx             → header + menu (mobile e desktop) por perfil
-    page.tsx                → tela do Mapa (usa components/Mapa.tsx)
-    territorios/page.tsx      → lista de territórios
-    designar/page.tsx          → designar território a um publicador
-    validar/page.tsx            → validar territórios devolvidos
-    progresso/page.tsx           → acompanhamento de progresso
-    analise/page.tsx              → relatórios/análise
-    historico/page.tsx             → histórico de marcações
-    relatorio/page.tsx              → relatório de saída
-    usuarios/page.tsx                → lista de usuários (admin)
-    usuarios/novo/page.tsx            → criar usuário (admin)
-    hierarquia/page.tsx                → hierarquia de perfis (admin)
-    configuracoes/page.tsx              → config gerais (admin)
-    logs/page.tsx                        → logs do sistema
-    perfil/page.tsx                       → perfil do usuário logado
+components/                   Componentes de tela
+├── Mapa.tsx                  Mapa principal (Leaflet)
+├── ImportarOSM.tsx           Gera quadras pelas ruas do OpenStreetMap
+└── …                         Offline, status de conexão, estados de página
 
-components/
-  Mapa.tsx                → componente principal do mapa (Leaflet): quadras, lados, pontos de parada
-  ImportarOSM.tsx           → gerar as quadras de um território pelas ruas do OpenStreetMap
-  EstadoPagina.tsx            → estados de loading/vazio/erro reutilizáveis
-  AcessoNegadoToast.tsx         → aviso de acesso negado
+lib/                          Regras de negócio (sem dependência de tela)
+├── supabase.ts               Cliente, tipos, cores e `buscarTodos` (paginação)
+├── permissoes.ts auth.ts mfa.ts
+├── territorio.ts quadras.ts  Contorno, rota e nomenclatura (JP01, JP02…)
+├── quadrasOSM.ts calibracaoPdf.ts
+└── offline/                  Cache, fila e sincronização offline
 
-lib/
-  supabase.ts              → cliente Supabase + cores/labels de status e perfil
-  auth.ts                   → login/logout
-  permissoes.ts               → regras de permissão por hierarquia de perfil
-  prazoTerritorio.ts            → cálculo de prazo/atraso de território
-  territorio.ts               → contorno, rota no Maps e leitura do GeoJSON dos territórios
-  quadras.ts                    → lados da quadra e nomes em sequência (21-01, 21-02…)
-  quadrasOSM.ts                   → gera as quadras a partir das ruas do OpenStreetMap
-
-tests/
-  quadras.test.ts         → testes da geração de quadras (`npm test`)
-
+tests/                        Testes unitários (`npm test`)
 supabase/
-  migrations/             → schema e permissões (RLS) do banco, aplicados com `supabase db push`
-  tests/rls.sh              → testes das permissões num Postgres descartável (Docker)
-
-.github/workflows/
-  supabase-keepalive.yml  → consulta periódica para o Supabase gratuito não pausar
-
-vercel.json                  → config de deploy na Vercel
+├── migrations/               Schema e RLS
+└── tests/                    Testes de permissão (Postgres descartável)
+scripts/                      Utilitários (ex.: migrar-banco.mjs)
+public/                       Ícones, manifest, service worker, Leaflet vendorizado
+docs/                         Guias, material de referência e rascunhos de design
+.github/workflows/            Keep-alive do Supabase
 ```
 
 ## Quadras a partir das ruas
